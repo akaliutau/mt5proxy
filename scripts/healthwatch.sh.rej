@@ -1,0 +1,11 @@
+--- mt5proxy_numpy_bridge_fix/scripts/healthwatch.sh	2026-06-16 19:45:51.000000000 +0000
++++ scripts/healthwatch.sh	2026-06-16 19:55:18.023735341 +0000
+@@ -54,7 +54,7 @@
+ 
+   if [[ -f "$MT5_FILE" && -f "$WINE_PYTHON_EXE" ]] && ! ss -tuln | grep -q ":${BRIDGE_PORT} "; then
+     log "Bridge port ${BRIDGE_PORT} is not listening while MT5 and Wine Python are installed"
+-    restart_program mt5bridge
++    restart_program mt5stack
+   fi
+ 
+   sleep "$INTERVAL"

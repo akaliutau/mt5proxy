@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u -o pipefail
+set -u
 
 export HOME=/home/trader
 export USER=trader
@@ -11,26 +11,22 @@ export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree=d;mshtml=d;winemenubuilder.exe=d}"
 export NO_AT_BRIDGE=1
-export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
 MT5_FILE="${MT5_FILE:-/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe}"
-BRIDGE_HOST="${MT5LINUX_BIND_HOST:-0.0.0.0}"
 BRIDGE_PORT="${MT5LINUX_PORT:-8001}"
+PYVENV=/opt/mt5-proxy-venv/bin/python
+PYTHON_WIN_URL="${PYTHON_WIN_URL:-https://www.python.org/ftp/python/3.9.13/python-3.9.13-amd64.exe}"
+PYTHON_EMBED_URL="${PYTHON_EMBED_URL:-https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip}"
+GET_PIP_URL="${GET_PIP_URL:-https://bootstrap.pypa.io/pip/3.9/get-pip.py}"
 WINE_PYTHON_DIR="${WINE_PYTHON_DIR:-$WINEPREFIX/drive_c/Python39}"
 WINE_PYTHON_EXE="${WINE_PYTHON_EXE:-$WINE_PYTHON_DIR/python.exe}"
 MT5_SETUP_URL="${MT5_SETUP_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}"
 WINE_MONO_URL="${WINE_MONO_URL:-https://dl.winehq.org/wine/wine-mono/10.3.0/wine-mono-10.3.0-x86.msi}"
-BOOTSTRAP_INTERVAL="${MT5_BOOTSTRAP_INTERVAL:-300}"
-WATCH_INTERVAL="${MT5_WATCH_INTERVAL:-20}"
-INSTALL_TIMEOUT="${INSTALL_WINE_PYTHON_TIMEOUT:-900}"
-BRIDGE_START_TIMEOUT="${BRIDGE_START_TIMEOUT:-45}"
-
-mkdir -p /logs /config /run/mt5-proxy "$WINEPREFIX"
 
 log() { echo "[$(date -Is)] $*"; }
 
 wait_for_x() {
-  for _ in $(seq 1 90); do
+  for _ in {1..60}; do
     if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
       return 0
     fi
@@ -41,34 +37,35 @@ wait_for_x() {
 }
 
 wine_ok() {
-  timeout 30 wine cmd /c echo OK >/tmp/wine-ok.txt 2>/tmp/wine-ok.err && grep -q OK /tmp/wine-ok.txt
+  wine cmd /c echo OK >/tmp/wine-ok.txt 2>/tmp/wine-ok.err && grep -q OK /tmp/wine-ok.txt
 }
 
 init_wine() {
   mkdir -p "$WINEPREFIX"
   log "Wine version: $(wine --version 2>/dev/null || echo missing)"
   log "Initializing Wine prefix: $WINEPREFIX"
-  timeout 120 wineboot --init || true
-  timeout 120 wineserver -w || true
+  wineboot --init || true
+  wineserver -w || true
   if wine_ok; then
     log "Wine cmd sanity OK"
   else
-    log "WARN: wine cmd sanity failed. Continuing because GUI may still need first-run setup."
+    log "WARN: wine cmd sanity failed. See /tmp/wine-ok.err. Continuing because GUI may still need first-run setup."
     cat /tmp/wine-ok.err 2>/dev/null || true
   fi
-  timeout 30 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f >/dev/null 2>&1 || true
+  wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f >/dev/null 2>&1 || true
 }
 
 install_mono() {
+  # Avoid interactive Wine Mono popup by installing explicitly. Failure is non-fatal for MT5 startup.
   if [[ -d "$WINEPREFIX/drive_c/windows/mono" ]]; then
     log "Wine Mono appears installed"
     return 0
   fi
   log "Installing Wine Mono non-interactively"
   mkdir -p "$WINEPREFIX/drive_c"
-  curl -L --retry 3 --connect-timeout 20 -o "$WINEPREFIX/drive_c/wine-mono.msi" "$WINE_MONO_URL" || return 0
-  WINEDLLOVERRIDES="mscoree=d" timeout 180 wine msiexec /i "$WINEPREFIX/drive_c/wine-mono.msi" /qn || true
-  timeout 120 wineserver -w || true
+  curl -L --retry 3 -o "$WINEPREFIX/drive_c/wine-mono.msi" "$WINE_MONO_URL" || return 0
+  WINEDLLOVERRIDES="mscoree=d" wine msiexec /i "$WINEPREFIX/drive_c/wine-mono.msi" /qn || true
+  wineserver -w || true
   rm -f "$WINEPREFIX/drive_c/wine-mono.msi"
 }
 

@@ -1,0 +1,458 @@
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/Dockerfile mt5proxy_original_bridge_fix/Dockerfile
+--- current_fix/mt5proxy_numpy_bridge_fix/Dockerfile	2026-06-16 19:15:18.000000000 +0000
++++ mt5proxy_original_bridge_fix/Dockerfile	2026-06-16 19:55:19.214339669 +0000
+@@ -36,7 +36,9 @@
+     MT5_AUTOINSTALL=true \
+     MT5_CMD_OPTIONS="" \
+     MT5_FILE="/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" \
++    PYTHON_WIN_URL="https://www.python.org/ftp/python/3.9.13/python-3.9.13-amd64.exe" \
+     PYTHON_EMBED_URL="https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip" \
++    GET_PIP_URL="https://bootstrap.pypa.io/pip/3.9/get-pip.py" \
+     WINE_PYTHON_DIR="/config/.wine/drive_c/Python39" \
+     WINE_PYTHON_EXE="/config/.wine/drive_c/Python39/python.exe" \
+     MT5_SETUP_URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" \
+@@ -93,6 +95,7 @@
+         libgl1-mesa-dri:i386 \
+         libglx-mesa0:i386 \
+         libvulkan1:i386 \
++        fonts-wine \
+         fonts-liberation \
+         fonts-dejavu-core \
+         fonts-dejavu-extra; \
+@@ -113,7 +116,8 @@
+ COPY app/requirements-api.txt /app/requirements-api.txt
+ COPY app/requirements-bridge.txt /app/requirements-bridge.txt
+ RUN /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/requirements-api.txt \
+-    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/requirements-bridge.txt
++    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir --no-deps mt5linux==1.0.3 \
++    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir 'rpyc==6.0.2' 'plumbum>=1.8,<2' 'pyxdg>=0.28,<1' 'numpy>=1.26.4,<2'
+ 
+ RUN groupadd -g 1000 trader \
+     && useradd -m -u 1000 -g trader -s /bin/bash trader \
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/README.md mt5proxy_original_bridge_fix/README.md
+--- current_fix/mt5proxy_numpy_bridge_fix/README.md	2026-06-16 19:51:37.000000000 +0000
++++ mt5proxy_original_bridge_fix/README.md	2026-06-16 19:55:19.340958701 +0000
+@@ -296,3 +296,13 @@
+ ```bash
+ curl -H "X-API-Key: dev-api-key" "http://127.0.0.1:8000/ready?deep=true"
+ ```
++
++## Bridge rollback fix note
++
++This revision intentionally restores the original working Wine Python / mt5linux bridge startup path. The bridge is again started by `mt5-stack.sh` exactly as in the working implementation:
++
++```bash
++wine "$WINE_PYTHON_EXE" -m mt5linux --host 0.0.0.0 -p 8001
++```
++
++The supervisor remains responsible for keeping the whole `mt5stack` process alive, and `healthwatch.sh` restarts `mt5stack` if port `8001` is missing after MT5 and Windows Python are installed. The separate experimental `mt5bridge` supervisor program was removed because it could race the original stack and flap the bridge.
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/config/supervisord.conf mt5proxy_original_bridge_fix/config/supervisord.conf
+--- current_fix/mt5proxy_numpy_bridge_fix/config/supervisord.conf	2026-06-16 19:45:46.000000000 +0000
++++ mt5proxy_original_bridge_fix/config/supervisord.conf	2026-06-16 19:55:18.023319514 +0000
+@@ -88,18 +88,6 @@
+ stdout_logfile=/logs/mt5-stack.log
+ stderr_logfile=/logs/mt5-stack.err.log
+ 
+-[program:mt5bridge]
+-command=/usr/local/bin/mt5-bridge-watch.sh
+-user=trader
+-priority=70
+-autostart=true
+-autorestart=true
+-startsecs=10
+-stopasgroup=true
+-killasgroup=true
+-stdout_logfile=/logs/mt5-bridge-watch.supervisor.log
+-stderr_logfile=/logs/mt5-bridge-watch.err.log
+-
+ [program:healthwatch]
+ command=/usr/local/bin/healthwatch.sh
+ priority=100
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/scripts/healthwatch.sh mt5proxy_original_bridge_fix/scripts/healthwatch.sh
+--- current_fix/mt5proxy_numpy_bridge_fix/scripts/healthwatch.sh	2026-06-16 19:45:51.000000000 +0000
++++ mt5proxy_original_bridge_fix/scripts/healthwatch.sh	2026-06-16 19:55:18.023735341 +0000
+@@ -54,7 +54,7 @@
+ 
+   if [[ -f "$MT5_FILE" && -f "$WINE_PYTHON_EXE" ]] && ! ss -tuln | grep -q ":${BRIDGE_PORT} "; then
+     log "Bridge port ${BRIDGE_PORT} is not listening while MT5 and Wine Python are installed"
+-    restart_program mt5bridge
++    restart_program mt5stack
+   fi
+ 
+   sleep "$INTERVAL"
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/scripts/install_wine_python.sh mt5proxy_original_bridge_fix/scripts/install_wine_python.sh
+--- current_fix/mt5proxy_numpy_bridge_fix/scripts/install_wine_python.sh	2026-06-16 19:51:37.000000000 +0000
++++ mt5proxy_original_bridge_fix/scripts/install_wine_python.sh	2026-06-16 19:55:16.895375316 +0000
+@@ -24,30 +24,17 @@
+ LINUX_PYTHON="${LINUX_PYTHON:-/opt/mt5-proxy-venv/bin/python}"
+ WHEEL_DIR="${WHEEL_DIR:-/tmp/mt5-windows-wheels}"
+ 
+-NUMPY_VERSION="${WINDOWS_NUMPY_VERSION:-1.23.5}"
++NUMPY_VERSION="${WINDOWS_NUMPY_VERSION:-1.26.4}"
+ MT5_PKG_VERSION="${WINDOWS_METATRADER5_VERSION:-5.0.36}"
+ MT5LINUX_VERSION="${WINDOWS_MT5LINUX_VERSION:-1.0.3}"
+ RPYC_VERSION="${WINDOWS_RPYC_VERSION:-6.0.2}"
+-FORCE_REINSTALL_WINE_PYTHON="${FORCE_REINSTALL_WINE_PYTHON:-false}"
+-RUNTIME_MARKER="${WINE_PYTHON_DIR}/.mt5proxy-runtime-versions"
+ 
+ log() { echo "[$(date -Is)] $*"; }
+ 
+ ensure_x() {
+-  mkdir -p /tmp/.X11-unix
+-  chmod 1777 /tmp/.X11-unix || true
+-  if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+-    local display_num="${DISPLAY#:}"
+-    display_num="${display_num%%.*}"
+-    rm -f "/tmp/.X${display_num}-lock" "/tmp/.X11-unix/X${display_num}" 2>/dev/null || true
++  if ! pgrep -x Xvfb >/dev/null 2>&1; then
+     Xvfb "$DISPLAY" -screen 0 1280x900x24 +extension GLX +render -noreset >/tmp/xvfb-install-python.log 2>&1 &
+-    for _ in $(seq 1 30); do
+-      xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && return 0
+-      sleep 1
+-    done
+-    echo "ERROR: Xvfb did not become ready on $DISPLAY" >&2
+-    cat /tmp/xvfb-install-python.log 2>/dev/null || true
+-    return 1
++    sleep 2
+   fi
+ }
+ 
+@@ -113,47 +100,6 @@
+ PY
+ }
+ 
+-runtime_marker_payload() {
+-  cat <<EOF
+-python_embed=$PYTHON_EMBED_URL
+-numpy=$NUMPY_VERSION
+-MetaTrader5=$MT5_PKG_VERSION
+-mt5linux=$MT5LINUX_VERSION
+-rpyc=$RPYC_VERSION
+-EOF
+-}
+-
+-runtime_marker_matches() {
+-  [[ -f "$RUNTIME_MARKER" ]] && diff -q <(runtime_marker_payload) "$RUNTIME_MARKER" >/dev/null 2>&1
+-}
+-
+-clean_site_packages_if_needed() {
+-  mkdir -p "$WINE_SITE_PACKAGES"
+-  if [[ "$FORCE_REINSTALL_WINE_PYTHON" == "true" ]] || ! runtime_marker_matches; then
+-    log "Cleaning Windows site-packages for bridge runtime reinstall"
+-    rm -rf \
+-      "$WINE_SITE_PACKAGES"/numpy \
+-      "$WINE_SITE_PACKAGES"/numpy.libs \
+-      "$WINE_SITE_PACKAGES"/numpy-*.dist-info \
+-      "$WINE_SITE_PACKAGES"/MetaTrader5 \
+-      "$WINE_SITE_PACKAGES"/MetaTrader5-*.dist-info \
+-      "$WINE_SITE_PACKAGES"/mt5linux \
+-      "$WINE_SITE_PACKAGES"/mt5linux-*.dist-info \
+-      "$WINE_SITE_PACKAGES"/rpyc \
+-      "$WINE_SITE_PACKAGES"/rpyc-*.dist-info \
+-      "$WINE_SITE_PACKAGES"/plumbum \
+-      "$WINE_SITE_PACKAGES"/plumbum-*.dist-info \
+-      "$WINE_SITE_PACKAGES"/dateutil \
+-      "$WINE_SITE_PACKAGES"/python_dateutil-*.dist-info \
+-      "$WINE_SITE_PACKAGES"/six.py \
+-      "$WINE_SITE_PACKAGES"/six-*.dist-info
+-  fi
+-}
+-
+-write_runtime_marker() {
+-  runtime_marker_payload >"$RUNTIME_MARKER"
+-}
+-
+ download_wheels() {
+   rm -rf "$WHEEL_DIR"
+   mkdir -p "$WHEEL_DIR"
+@@ -199,11 +145,9 @@
+   ensure_wine_prefix
+   install_embedded_python
+   configure_embedded_python_paths
+-  clean_site_packages_if_needed
+   download_wheels
+   extract_wheels_to_embedded_python
+   wine_python_test
+-  write_runtime_marker
+   log "WINE_PYTHON_READY=$WINE_PYTHON_EXE"
+ }
+ 
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/scripts/mt5-stack.sh mt5proxy_original_bridge_fix/scripts/mt5-stack.sh
+--- current_fix/mt5proxy_numpy_bridge_fix/scripts/mt5-stack.sh	2026-06-16 19:51:37.000000000 +0000
++++ mt5proxy_original_bridge_fix/scripts/mt5-stack.sh	2026-06-16 19:55:16.883919634 +0000
+@@ -1,5 +1,5 @@
+ #!/usr/bin/env bash
+-set -u -o pipefail
++set -u
+ 
+ export HOME=/home/trader
+ export USER=trader
+@@ -11,26 +11,22 @@
+ export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
+ export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree=d;mshtml=d;winemenubuilder.exe=d}"
+ export NO_AT_BRIDGE=1
+-export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
+ 
+ MT5_FILE="${MT5_FILE:-/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe}"
+-BRIDGE_HOST="${MT5LINUX_BIND_HOST:-0.0.0.0}"
+ BRIDGE_PORT="${MT5LINUX_PORT:-8001}"
++PYVENV=/opt/mt5-proxy-venv/bin/python
++PYTHON_WIN_URL="${PYTHON_WIN_URL:-https://www.python.org/ftp/python/3.9.13/python-3.9.13-amd64.exe}"
++PYTHON_EMBED_URL="${PYTHON_EMBED_URL:-https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip}"
++GET_PIP_URL="${GET_PIP_URL:-https://bootstrap.pypa.io/pip/3.9/get-pip.py}"
+ WINE_PYTHON_DIR="${WINE_PYTHON_DIR:-$WINEPREFIX/drive_c/Python39}"
+ WINE_PYTHON_EXE="${WINE_PYTHON_EXE:-$WINE_PYTHON_DIR/python.exe}"
+ MT5_SETUP_URL="${MT5_SETUP_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}"
+ WINE_MONO_URL="${WINE_MONO_URL:-https://dl.winehq.org/wine/wine-mono/10.3.0/wine-mono-10.3.0-x86.msi}"
+-BOOTSTRAP_INTERVAL="${MT5_BOOTSTRAP_INTERVAL:-300}"
+-WATCH_INTERVAL="${MT5_WATCH_INTERVAL:-20}"
+-INSTALL_TIMEOUT="${INSTALL_WINE_PYTHON_TIMEOUT:-900}"
+-BRIDGE_START_TIMEOUT="${BRIDGE_START_TIMEOUT:-45}"
+-
+-mkdir -p /logs /config /run/mt5-proxy "$WINEPREFIX"
+ 
+ log() { echo "[$(date -Is)] $*"; }
+ 
+ wait_for_x() {
+-  for _ in $(seq 1 90); do
++  for _ in {1..60}; do
+     if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
+       return 0
+     fi
+@@ -41,34 +37,35 @@
+ }
+ 
+ wine_ok() {
+-  timeout 30 wine cmd /c echo OK >/tmp/wine-ok.txt 2>/tmp/wine-ok.err && grep -q OK /tmp/wine-ok.txt
++  wine cmd /c echo OK >/tmp/wine-ok.txt 2>/tmp/wine-ok.err && grep -q OK /tmp/wine-ok.txt
+ }
+ 
+ init_wine() {
+   mkdir -p "$WINEPREFIX"
+   log "Wine version: $(wine --version 2>/dev/null || echo missing)"
+   log "Initializing Wine prefix: $WINEPREFIX"
+-  timeout 120 wineboot --init || true
+-  timeout 120 wineserver -w || true
++  wineboot --init || true
++  wineserver -w || true
+   if wine_ok; then
+     log "Wine cmd sanity OK"
+   else
+-    log "WARN: wine cmd sanity failed. Continuing because GUI may still need first-run setup."
++    log "WARN: wine cmd sanity failed. See /tmp/wine-ok.err. Continuing because GUI may still need first-run setup."
+     cat /tmp/wine-ok.err 2>/dev/null || true
+   fi
+-  timeout 30 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f >/dev/null 2>&1 || true
++  wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f >/dev/null 2>&1 || true
+ }
+ 
+ install_mono() {
++  # Avoid interactive Wine Mono popup by installing explicitly. Failure is non-fatal for MT5 startup.
+   if [[ -d "$WINEPREFIX/drive_c/windows/mono" ]]; then
+     log "Wine Mono appears installed"
+     return 0
+   fi
+   log "Installing Wine Mono non-interactively"
+   mkdir -p "$WINEPREFIX/drive_c"
+-  curl -L --retry 3 --connect-timeout 20 -o "$WINEPREFIX/drive_c/wine-mono.msi" "$WINE_MONO_URL" || return 0
+-  WINEDLLOVERRIDES="mscoree=d" timeout 180 wine msiexec /i "$WINEPREFIX/drive_c/wine-mono.msi" /qn || true
+-  timeout 120 wineserver -w || true
++  curl -L --retry 3 -o "$WINEPREFIX/drive_c/wine-mono.msi" "$WINE_MONO_URL" || return 0
++  WINEDLLOVERRIDES="mscoree=d" wine msiexec /i "$WINEPREFIX/drive_c/wine-mono.msi" /qn || true
++  wineserver -w || true
+   rm -f "$WINEPREFIX/drive_c/wine-mono.msi"
+ }
+ 
+@@ -78,84 +75,90 @@
+     return 0
+   fi
+   if [[ "${MT5_AUTOINSTALL:-true}" != "true" ]]; then
+-    log "MT5 is not installed and MT5_AUTOINSTALL=false. Use noVNC and run install_mt5_manual.sh if needed."
+-    return 1
++    log "MT5 is not installed and MT5_AUTOINSTALL=false. Use noVNC and run install_mt5_manual.sh."
++    return 0
+   fi
+   log "Downloading MT5 installer"
+-  curl -L --retry 3 --connect-timeout 20 -o /tmp/mt5setup.exe "$MT5_SETUP_URL" || { log "MT5 download failed"; return 1; }
+-  log "Running MT5 installer with /auto"
+-  timeout "${MT5_INSTALL_TIMEOUT:-600}" wine /tmp/mt5setup.exe /auto || true
+-  timeout 180 wineserver -w || true
++  curl -L --retry 3 -o /tmp/mt5setup.exe "$MT5_SETUP_URL" || { log "MT5 download failed"; return 0; }
++  log "Running MT5 installer with /auto. If it does not finish, open noVNC and run install_mt5_manual.sh."
++  wine /tmp/mt5setup.exe /auto || true
++  wineserver -w || true
+   rm -f /tmp/mt5setup.exe
+   if [[ -f "$MT5_FILE" ]]; then
+     log "MT5 installed successfully"
+-    return 0
++  else
++    log "WARN: MT5 installer did not create $MT5_FILE"
+   fi
+-  log "WARN: MT5 installer did not create $MT5_FILE"
+-  return 1
+ }
+ 
+ start_mt5() {
+   if [[ ! -f "$MT5_FILE" ]]; then
+-    log "MT5 file not found; terminal cannot start yet"
++    log "MT5 file not found; cannot start terminal yet"
+     return 1
+   fi
+   if pgrep -f "terminal64.exe" >/dev/null 2>&1; then
++    log "MT5 terminal already running"
+     return 0
+   fi
+   log "Starting MT5 terminal"
+-  wine "$MT5_FILE" ${MT5_CMD_OPTIONS:-} >>/logs/mt5-terminal.log 2>&1 &
++  wine "$MT5_FILE" ${MT5_CMD_OPTIONS:-} >/logs/mt5-terminal.log 2>&1 &
+   sleep 10
+-  if pgrep -f "terminal64.exe" >/dev/null 2>&1; then
+-    log "MT5 terminal is running"
+-    return 0
+-  fi
+-  log "WARN: MT5 terminal process was not detected after start"
+-  tail -80 /logs/mt5-terminal.log 2>/dev/null || true
+-  return 1
++  return 0
+ }
+ 
+-ensure_wine_python() {
+-  if [[ -f "$WINE_PYTHON_EXE" ]] && timeout 60 wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('imports OK')" >/tmp/mt5-import.txt 2>&1; then
++install_wine_python() {
++  log "Ensuring Windows embeddable Python and MT5 bridge packages"
++  install_wine_python.sh
++}
++start_bridge() {
++  if ss -tuln | grep -q ":$BRIDGE_PORT "; then
++    log "mt5linux bridge already listening on $BRIDGE_PORT"
+     return 0
+   fi
+-  log "Windows Python or required packages are missing/broken; repairing"
+-  cat /tmp/mt5-import.txt 2>/dev/null || true
+-  flock /run/mt5-proxy/install-wine-python.lock timeout "$INSTALL_TIMEOUT" FORCE_REINSTALL_WINE_PYTHON=true install_wine_python.sh >>/logs/install-wine-python.log 2>&1
++  if [[ ! -f "$WINE_PYTHON_EXE" ]]; then
++    log "WARN: Windows Python is missing: $WINE_PYTHON_EXE; bridge not started"
++    return 1
++  fi
++  if ! wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('imports OK')" >/tmp/mt5-import.txt 2>&1; then
++    log "WARN: Wine Python cannot import MetaTrader5/mt5linux/rpyc; bridge not started"
++    cat /tmp/mt5-import.txt 2>/dev/null || true
++    return 1
++  fi
++  log "Starting Windows-side mt5linux bridge on 0.0.0.0:$BRIDGE_PORT"
++  wine "$WINE_PYTHON_EXE" -m mt5linux --host 0.0.0.0 -p "$BRIDGE_PORT" >/logs/mt5-bridge.log 2>&1 &
++  for _ in {1..30}; do
++    if ss -tuln | grep -q ":$BRIDGE_PORT "; then
++      log "mt5linux bridge is listening on $BRIDGE_PORT"
++      return 0
++    fi
++    sleep 1
++  done
++  log "WARN: mt5linux bridge did not start. Check /logs/mt5-bridge.log"
++  tail -100 /logs/mt5-bridge.log 2>/dev/null || true
++  return 1
+ }
+-
+-# Bridge startup is supervised separately by mt5-bridge-watch.sh. Keeping it as
+-# its own supervisor program makes failures visible and lets supervisor restart
+-# only the bridge without resetting the whole MT5 bootstrap stack.
+-
+-bootstrap_once() {
++main() {
+   wait_for_x || true
+-  init_wine || true
++  init_wine
+   install_mono || true
+-  ensure_wine_python || true
+   install_mt5_if_needed || true
+   start_mt5 || true
+-}
++  install_wine_python || true
++  start_bridge || true
+ 
+-main() {
+-  local last_bootstrap=0 now
+-  bootstrap_once
+-  last_bootstrap=$(date +%s)
+   while true; do
+-    sleep "$WATCH_INTERVAL"
+-    now=$(date +%s)
+-
+-    if (( now - last_bootstrap >= BOOTSTRAP_INTERVAL )); then
+-      ensure_wine_python || true
+-      install_mt5_if_needed || true
+-      last_bootstrap=$now
+-    fi
+-
++    sleep 30
+     if [[ -f "$MT5_FILE" ]] && ! pgrep -f "terminal64.exe" >/dev/null 2>&1; then
+       log "MT5 terminal not detected; restarting"
+       start_mt5 || true
+     fi
++    if ! ss -tuln | grep -q ":$BRIDGE_PORT "; then
++      log "Bridge not detected; restarting"
++      start_bridge || true
++    fi
+   done
+ }
+ 
+ main "$@"
++
++
+diff -ruN current_fix/mt5proxy_numpy_bridge_fix/scripts/start_bridge.sh mt5proxy_original_bridge_fix/scripts/start_bridge.sh
+--- current_fix/mt5proxy_numpy_bridge_fix/scripts/start_bridge.sh	2026-06-16 19:46:02.000000000 +0000
++++ mt5proxy_original_bridge_fix/scripts/start_bridge.sh	2026-06-16 19:55:16.904585805 +0000
+@@ -16,43 +16,26 @@
+ BRIDGE_PORT="${MT5LINUX_PORT:-8001}"
+ WINE_PYTHON_DIR="${WINE_PYTHON_DIR:-$WINEPREFIX/drive_c/Python39}"
+ WINE_PYTHON_EXE="${WINE_PYTHON_EXE:-$WINE_PYTHON_DIR/python.exe}"
+-FORCE_RESTART_BRIDGE="${FORCE_RESTART_BRIDGE:-false}"
++LOG_FILE="${BRIDGE_LOG_FILE:-/logs/mt5-bridge.log}"
+ 
+-mkdir -p /logs /run/mt5-proxy
+-
+-kill_bridge_listeners() {
+-  local pids
+-  pids="$(lsof -tiTCP:"$BRIDGE_PORT" -sTCP:LISTEN 2>/dev/null | tr '\n' ' ' || true)"
+-  if [[ -n "$pids" ]]; then
+-    echo "Killing process(es) listening on ${BRIDGE_PORT}: ${pids}"
+-    # shellcheck disable=SC2086
+-    kill $pids 2>/dev/null || true
+-    sleep 2
+-    # shellcheck disable=SC2086
+-    kill -9 $pids 2>/dev/null || true
+-  fi
+-  pkill -f "python.exe.*mt5linux.*${BRIDGE_PORT}" 2>/dev/null || true
+-  pkill -f "Python39.*mt5linux.*${BRIDGE_PORT}" 2>/dev/null || true
+-}
++mkdir -p /logs
+ 
+ if [[ ! -f "$WINE_PYTHON_EXE" ]]; then
+   echo "ERROR: Windows Python is missing: $WINE_PYTHON_EXE" >&2
+-  echo "Run inside container as trader: install_wine_python.sh" >&2
++  echo "Run: gosu trader bash -lc 'install_wine_python.sh'" >&2
+   exit 1
+ fi
+ 
+ if ss -tuln | grep -q ":$BRIDGE_PORT "; then
+-  if [[ "$FORCE_RESTART_BRIDGE" == "true" ]]; then
+-    kill_bridge_listeners
+-  else
+-    echo "mt5linux bridge already listening on $BRIDGE_PORT"
+-    exit 0
+-  fi
++  echo "mt5linux bridge already listening on $BRIDGE_PORT"
++  exit 0
+ fi
+ 
+ echo "Checking Windows-side imports..."
+-timeout 60 wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('Windows-side imports OK')"
++wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('Windows-side imports OK')"
+ 
+ echo "Starting Windows-side mt5linux RPyC server on ${BRIDGE_HOST}:${BRIDGE_PORT}"
+-echo "Command: wine $WINE_PYTHON_EXE -u -m mt5linux --host $BRIDGE_HOST -p $BRIDGE_PORT"
+-exec wine "$WINE_PYTHON_EXE" -u -m mt5linux --host "$BRIDGE_HOST" -p "$BRIDGE_PORT"
++echo "Command: wine $WINE_PYTHON_EXE -m mt5linux --host $BRIDGE_HOST -p $BRIDGE_PORT"
++exec wine "$WINE_PYTHON_EXE" -m mt5linux --host "$BRIDGE_HOST" -p "$BRIDGE_PORT"
++
++

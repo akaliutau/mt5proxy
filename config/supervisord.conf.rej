@@ -1,0 +1,21 @@
+--- mt5proxy_numpy_bridge_fix/config/supervisord.conf	2026-06-16 19:45:46.000000000 +0000
++++ config/supervisord.conf	2026-06-16 19:55:18.023319514 +0000
+@@ -88,18 +88,6 @@
+ stdout_logfile=/logs/mt5-stack.log
+ stderr_logfile=/logs/mt5-stack.err.log
+ 
+-[program:mt5bridge]
+-command=/usr/local/bin/mt5-bridge-watch.sh
+-user=trader
+-priority=70
+-autostart=true
+-autorestart=true
+-startsecs=10
+-stopasgroup=true
+-killasgroup=true
+-stdout_logfile=/logs/mt5-bridge-watch.supervisor.log
+-stderr_logfile=/logs/mt5-bridge-watch.err.log
+-
+ [program:healthwatch]
+ command=/usr/local/bin/healthwatch.sh
+ priority=100

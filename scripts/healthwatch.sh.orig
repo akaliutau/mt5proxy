@@ -1,0 +1,61 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+SUPERVISOR_CONF="${SUPERVISOR_CONF:-/etc/supervisor/conf.d/mt5proxy.conf}"
+API_URL="${API_HEALTH_URL:-http://127.0.0.1:8000/health}"
+NOVNC_PORT="${NOVNC_PORT:-6080}"
+VNC_PORT="${VNC_PORT:-5900}"
+BRIDGE_PORT="${MT5LINUX_PORT:-8001}"
+MT5_FILE="${MT5_FILE:-/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe}"
+WINE_PYTHON_EXE="${WINE_PYTHON_EXE:-/config/.wine/drive_c/Python39/python.exe}"
+INTERVAL="${HEALTHWATCH_INTERVAL:-30}"
+START_PERIOD="${HEALTHWATCH_START_PERIOD:-90}"
+COOLDOWN="${HEALTHWATCH_RESTART_COOLDOWN:-120}"
+STATE_DIR="/run/mt5-proxy/healthwatch"
+mkdir -p "$STATE_DIR"
+
+log() { echo "[$(date -Is)] $*"; }
+
+restart_program() {
+  local program="$1"
+  local stamp="$STATE_DIR/${program}.last_restart"
+  local now last=0
+  now=$(date +%s)
+  if [[ -f "$stamp" ]]; then
+    last=$(cat "$stamp" 2>/dev/null || echo 0)
+  fi
+  if (( now - last < COOLDOWN )); then
+    log "Skipping restart for ${program}; cooldown active"
+    return 0
+  fi
+  echo "$now" >"$stamp"
+  log "Restarting supervisor program: ${program}"
+  supervisorctl -c "$SUPERVISOR_CONF" restart "$program" || true
+}
+
+sleep "$START_PERIOD"
+log "Healthwatch started"
+
+while true; do
+  if ! curl -fsS --max-time 5 "$API_URL" >/dev/null; then
+    log "API health check failed"
+    restart_program api
+  fi
+
+  if ! ss -tuln | grep -q ":${VNC_PORT} "; then
+    log "VNC port ${VNC_PORT} is not listening"
+    restart_program x11vnc
+  fi
+
+  if ! curl -fsS --max-time 5 "http://127.0.0.1:${NOVNC_PORT}/vnc.html" >/dev/null; then
+    log "noVNC health check failed"
+    restart_program novnc
+  fi
+
+  if [[ -f "$MT5_FILE" && -f "$WINE_PYTHON_EXE" ]] && ! ss -tuln | grep -q ":${BRIDGE_PORT} "; then
+    log "Bridge port ${BRIDGE_PORT} is not listening while MT5 and Wine Python are installed"
+    restart_program mt5stack
+  fi
+
+  sleep "$INTERVAL"
+done

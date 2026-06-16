@@ -36,7 +36,9 @@ ENV DEBIAN_FRONTEND=noninteractive \
     MT5_AUTOINSTALL=true \
     MT5_CMD_OPTIONS="" \
     MT5_FILE="/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe" \
+    PYTHON_WIN_URL="https://www.python.org/ftp/python/3.9.13/python-3.9.13-amd64.exe" \
     PYTHON_EMBED_URL="https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip" \
+    GET_PIP_URL="https://bootstrap.pypa.io/pip/3.9/get-pip.py" \
     WINE_PYTHON_DIR="/config/.wine/drive_c/Python39" \
     WINE_PYTHON_EXE="/config/.wine/drive_c/Python39/python.exe" \
     MT5_SETUP_URL="https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe" \
@@ -93,6 +95,7 @@ RUN set -eux; \
         libgl1-mesa-dri:i386 \
         libglx-mesa0:i386 \
         libvulkan1:i386 \
+        fonts-wine \
         fonts-liberation \
         fonts-dejavu-core \
         fonts-dejavu-extra; \
@@ -113,7 +116,8 @@ RUN python3 --version \
 COPY app/requirements-api.txt /app/requirements-api.txt
 COPY app/requirements-bridge.txt /app/requirements-bridge.txt
 RUN /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/requirements-api.txt \
-    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/requirements-bridge.txt
+    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir --no-deps mt5linux==1.0.3 \
+    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir 'rpyc==6.0.2' 'plumbum>=1.8,<2' 'pyxdg>=0.28,<1' 'numpy>=1.26.4,<2'
 
 RUN groupadd -g 1000 trader \
     && useradd -m -u 1000 -g trader -s /bin/bash trader \

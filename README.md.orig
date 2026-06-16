@@ -249,3 +249,13 @@ gosu trader bash -lc 'install_wine_python.sh'
 gosu trader bash -lc 'start_mt5.sh'
 gosu trader bash -lc 'start_bridge.sh'
 ```
+
+## Bridge rollback fix note
+
+This revision intentionally restores the original working Wine Python / mt5linux bridge startup path. The bridge is again started by `mt5-stack.sh` exactly as in the working implementation:
+
+```bash
+wine "$WINE_PYTHON_EXE" -m mt5linux --host 0.0.0.0 -p 8001
+```
+
+The supervisor remains responsible for keeping the whole `mt5stack` process alive, and `healthwatch.sh` restarts `mt5stack` if port `8001` is missing after MT5 and Windows Python are installed. The separate experimental `mt5bridge` supervisor program was removed because it could race the original stack and flap the bridge.

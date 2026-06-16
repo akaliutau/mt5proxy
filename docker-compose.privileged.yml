@@ -1,4 +1,0 @@
-# Use this only if Wine services still fail with seccomp=unconfined.
-services:
-  mt5proxy:
-    privileged: true
