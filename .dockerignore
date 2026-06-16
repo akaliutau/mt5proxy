@@ -1,7 +1,0 @@
-.git
-.venv
-__pycache__
-*.pyc
-*.log
-.env
-mt5proxy_*.zip
