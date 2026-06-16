@@ -216,3 +216,13 @@ __marimo__/
 
 # Streamlit
 .streamlit/secrets.toml
+.idea/
+runs/
+*-key.json
+.firebase-web-config.json
+*.env.bak*
+aggregated_dump.txt
+notes.txt
+scripts/*-debug.log
+.indexframe-youtube*
+test_smtp2go.py

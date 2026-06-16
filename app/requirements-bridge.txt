@@ -1,0 +1,6 @@
+# Installed with --no-deps in Dockerfile to avoid older mt5linux metadata pulling bad NumPy pins.
+mt5linux==1.0.3
+rpyc==6.0.2
+plumbum>=1.8,<2
+pyxdg>=0.28,<1
+numpy>=1.26.4,<2
