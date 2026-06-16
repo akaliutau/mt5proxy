@@ -41,9 +41,13 @@ ENV DEBIAN_FRONTEND=noninteractive \
 
 SHELL ["/bin/bash", "-o", "pipefail", "-c"]
 
-# Use Ubuntu repository Wine only. No WineHQ apt repository is added, so there is no WineHQ GPG key failure.
+# Install Wine from the WineHQ Ubuntu 22.04 (jammy) repository.
+# This intentionally uses WineHQ, not Ubuntu universe Wine, because the Windows
+# Python/MetaTrader5 bridge requires newer Wine CRT coverage than Ubuntu 22.04
+# distro Wine provides.
+ARG WINEHQ_UBUNTU_CODENAME=jammy
+ARG WINEHQ_PACKAGE=winehq-staging
 RUN dpkg --add-architecture i386 \
-    && rm -f /etc/apt/sources.list.d/winehq*.list /etc/apt/sources.list.d/winehq*.sources \
     && apt-get update \
     && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         ca-certificates \
@@ -51,11 +55,23 @@ RUN dpkg --add-architecture i386 \
         wget \
         gnupg \
         software-properties-common \
+    && add-apt-repository -y universe \
+    && install -d -m 0755 /etc/apt/keyrings \
+    && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
+    && chmod 0644 /etc/apt/keyrings/winehq-archive.key \
+    && wget -O /etc/apt/sources.list.d/winehq-${WINEHQ_UBUNTU_CODENAME}.sources \
+        https://dl.winehq.org/wine-builds/ubuntu/dists/${WINEHQ_UBUNTU_CODENAME}/winehq-${WINEHQ_UBUNTU_CODENAME}.sources \
+    && apt-get update \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --install-recommends \
+        "${WINEHQ_PACKAGE}" \
+        fonts-wine \
+    && DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
         unzip \
         cabextract \
         p7zip-full \
         xvfb \
         xauth \
+        x11-utils \
         x11vnc \
         fluxbox \
         novnc \
@@ -64,6 +80,7 @@ RUN dpkg --add-architecture i386 \
         winbind \
         gosu \
         tini \
+        supervisor \
         procps \
         iproute2 \
         net-tools \
@@ -81,22 +98,16 @@ RUN dpkg --add-architecture i386 \
         libgl1-mesa-dri:i386 \
         libglx-mesa0:i386 \
         libvulkan1:i386 \
-        fonts-wine \
         fonts-liberation \
         fonts-dejavu-core \
         fonts-dejavu-extra \
-    && install -d -m 0755 /etc/apt/keyrings \
-    && wget -O /etc/apt/keyrings/winehq-archive.key https://dl.winehq.org/wine-builds/winehq.key \
-    && chmod 0644 /etc/apt/keyrings/winehq-archive.key \
-    && wget -O /etc/apt/sources.list.d/winehq-jammy.sources https://dl.winehq.org/wine-builds/ubuntu/dists/jammy/winehq-jammy.sources \
-    && apt-get update \
-    && DEBIAN_FRONTEND=noninteractive apt-get install -y --install-recommends winehq-staging \
+    && wine --version \
     && rm -rf /var/lib/apt/lists/*
 
 RUN python3 --version \
     && python3 -m venv /opt/mt5-proxy-venv \
     && /opt/mt5-proxy-venv/bin/python -m pip install --upgrade pip setuptools wheel
-    
+
 COPY app/requirements-api.txt /app/requirements-api.txt
 COPY app/requirements-bridge.txt /app/requirements-bridge.txt
 RUN /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/requirements-api.txt \
@@ -105,17 +116,20 @@ RUN /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/require
 
 RUN groupadd -g 1000 trader \
     && useradd -m -u 1000 -g trader -s /bin/bash trader \
-    && mkdir -p /config /logs /home/trader /app /app_tools \
-    && chown -R trader:trader /config /logs /home/trader /app /app_tools
-    
+    && mkdir -p /config /logs /home/trader /app /app_tools /run/mt5-proxy \
+    && chown -R trader:trader /config /logs /home/trader /app /app_tools /run/mt5-proxy
+
 COPY app /app
 COPY tools /app_tools
 COPY scripts/*.sh /usr/local/bin/
 COPY scripts/*.py /usr/local/bin/
+COPY docker/supervisord.conf /etc/supervisor/conf.d/mt5proxy.conf
 RUN chmod +x /usr/local/bin/*.sh /usr/local/bin/*.py \
-    && chown -R trader:trader /app /app_tools
+    && chown -R trader:trader /app /app_tools /etc/supervisor/conf.d/mt5proxy.conf
 
 WORKDIR /app
 VOLUME ["/config", "/logs"]
 EXPOSE 6080 5900 8000 8001
+HEALTHCHECK --interval=30s --timeout=10s --start-period=120s --retries=5 \
+  CMD curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1
 ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/bin/docker-entrypoint.sh"]

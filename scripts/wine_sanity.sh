@@ -32,3 +32,5 @@ wine cmd /c ver || exit 2
 wine cmd /c echo OK || exit 3
 
 echo "WINE_SANITY_PASSED"
+
+

@@ -5,6 +5,8 @@ services:
       dockerfile: Dockerfile
       args:
         BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
+        WINEHQ_UBUNTU_CODENAME: ${WINEHQ_UBUNTU_CODENAME:-jammy}
+        WINEHQ_PACKAGE: ${WINEHQ_PACKAGE:-winehq-staging}
     image: mt5-proxy-scratch:local
     container_name: mt5-proxy-scratch
     restart: unless-stopped
@@ -36,6 +38,9 @@ services:
       MT5LINUX_PORT: "8001"
       MT5LINUX_TIMEOUT: ${MT5LINUX_TIMEOUT:-300}
       MT5_TIMEOUT_MS: ${MT5_TIMEOUT_MS:-60000}
+      READY_MT5_TIMEOUT_MS: ${READY_MT5_TIMEOUT_MS:-15000}
+      BRIDGE_INIT_RETRY_SECONDS: ${BRIDGE_INIT_RETRY_SECONDS:-60}
+      BRIDGE_INIT_TIMEOUT_SECONDS: ${BRIDGE_INIT_TIMEOUT_SECONDS:-120}
       MT5_LOGIN: ${MT5_LOGIN:-}
       MT5_PASSWORD: ${MT5_PASSWORD:-}
       MT5_SERVER: ${MT5_SERVER:-}
@@ -53,7 +58,15 @@ services:
     volumes:
       - mt5_config:/config
       - mt5_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
 
 volumes:
   mt5_config:
   mt5_logs:
+
+

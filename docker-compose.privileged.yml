@@ -2,3 +2,5 @@
 services:
   mt5proxy:
     privileged: true
+
+

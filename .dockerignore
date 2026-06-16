@@ -1,0 +1,11 @@
+.git
+.venv
+.venv-test
+__pycache__
+*.pyc
+*.pyo
+*.log
+logs
+config
+.env
+.DS_Store

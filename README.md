@@ -1,21 +1,15 @@
-# MT5 Proxy from-scratch all-in-one Docker image
+# MT5 Proxy Docker image
 
-This project builds one container from a plain Ubuntu base image. It does **not** use `gmag11/metatrader5_vnc` and does **not** add the WineHQ apt repository, so it avoids the WineHQ `NO_PUBKEY 76F1A20FF987672F` build failure.
+This project builds one all-in-one Ubuntu 22.04 container for MT5 under Wine, the Windows-side `mt5linux` bridge, noVNC, and the FastAPI proxy.
 
-The image contains:
+Important implementation points:
 
-- Ubuntu base image, default `ubuntu:22.04`
-- Wine from Ubuntu apt repositories
-- Xvfb virtual display
-- Fluxbox desktop
-- x11vnc + noVNC browser desktop
-- MetaTrader 5 under Wine
-- Windows Python 3.9 in Wine
-- Windows `MetaTrader5` package
-- `mt5linux` bridge on port `8001`
-- FastAPI proxy on port `8000`
-
-Host machine can be Ubuntu 24.04. The container defaults to Ubuntu 22.04 because MT5/Wine in Docker has been more reliable there.
+- Wine is installed from the official WineHQ Ubuntu 22.04 / `jammy` repository, default package `winehq-staging`.
+- The image does not use `gmag11/metatrader5_vnc`.
+- Windows Python stays at 3.9.13.
+- Windows package defaults stay pinned to `MetaTrader5==5.0.36`, `mt5linux==1.0.3`, `rpyc==6.0.2`, and `numpy==1.26.4`.
+- `supervisord` starts and restarts Xvfb, Fluxbox, x11vnc, noVNC, the API, and the MT5 stack.
+- The MT5 stack automatically initializes Wine, installs/checks Windows Python packages, attempts MT5 auto-install, starts MT5, starts the bridge, and repeatedly probes MT5 initialization through the bridge.
 
 ## Ports
 
@@ -23,201 +17,137 @@ Host machine can be Ubuntu 24.04. The container defaults to Ubuntu 22.04 because
 |---|---:|---|
 | `http://127.0.0.1:3000/vnc.html` | `6080` | noVNC desktop |
 | `127.0.0.1:5900` | `5900` | raw VNC |
-| `http://127.0.0.1:8000/health` | `8000` | REST API |
+| `http://127.0.0.1:8000/health` | `8000` | REST API liveness |
+| `http://127.0.0.1:8000/health/ready` | `8000` | bridge + MT5 initialize readiness |
 | `127.0.0.1:8001` | `8001` | mt5linux bridge debug |
 
-All ports are bound to `127.0.0.1` by default.
+All compose ports are bound to `127.0.0.1` by default, suitable for a GCP VM behind SSH tunnels.
 
-## 1. Build and run
+## 1. Local build/run command
 
 ```bash
 cp .env.example .env
 nano .env
+./scripts/local_up.sh
+```
 
-docker compose build --no-cache
-docker compose up -d
+`local_up.sh` runs:
 
+```bash
+docker compose build
+docker compose up -d --remove-orphans
 docker compose ps
+```
+
+Follow logs:
+
+```bash
 docker compose logs -f mt5proxy
 ```
 
-Open desktop stream:
+Open noVNC:
 
 ```text
 http://127.0.0.1:3000/vnc.html
 ```
 
-Check API:
+## 2. Local test command
+
+```bash
+./tests/run_external_tests.sh
+```
+
+The test command creates a local Python venv, waits for `/health/ready`, then runs the external API smoke tests against `http://127.0.0.1:8000`.
+
+Read-only tests require a usable logged-in MT5 terminal/session. Mutation tests are disabled by default.
+
+Demo mutation testing only:
+
+```bash
+TRADING_ENABLED=true docker compose up -d --force-recreate
+PLACE_TRADES=true ./tests/run_external_tests.sh
+```
+
+## 3. Clean reset when switching Wine builds
+
+If a previous container created a broken Wine prefix using the wrong Wine packages, reset the local named volumes before retesting:
+
+```bash
+./scripts/local_reset.sh
+./scripts/local_up.sh
+./tests/run_external_tests.sh
+```
+
+This removes the local `/config` and `/logs` named volumes. Do not use it on a VM where the MT5 login/profile must be preserved unless you have backed it up.
+
+## 4. Autostart/self-healing design
+
+The container entrypoint starts `supervisord`. Supervisor manages:
+
+- `xvfb`
+- `fluxbox`
+- `x11vnc`
+- `novnc`
+- `api`
+- `mt5-stack`
+
+The MT5 stack process manages Wine/MT5-specific lifecycle:
+
+1. Waits for X.
+2. Initializes the Wine prefix.
+3. Installs Wine Mono non-interactively when needed.
+4. Ensures Windows embeddable Python and bridge packages are installed.
+5. Attempts MT5 `/auto` install when `MT5_AUTOINSTALL=true`.
+6. Starts MT5 terminal.
+7. Starts the Windows-side `mt5linux` bridge.
+8. Repeatedly probes `mt5.initialize()` through the bridge and logs failures to `/logs/bridge-init.log`.
+9. Restarts MT5 or bridge if their processes/socket disappear.
+
+Manual commands still exist for debugging, but normal boot should not require them:
+
+```bash
+docker exec -it mt5-proxy-scratch bash
+
+gosu trader bash -lc 'wine_sanity.sh'
+gosu trader bash -lc 'install_wine_python.sh'
+gosu trader bash -lc 'start_mt5.sh'
+gosu trader bash -lc 'start_bridge.sh'
+```
+
+`start_bridge.sh` now auto-runs `install_wine_python.sh` if Python/imports are missing, then starts the bridge.
+
+## 5. Health endpoints
+
+Liveness, used by Docker healthcheck:
 
 ```bash
 curl http://127.0.0.1:8000/health
 ```
 
-## 2. First-time Wine/MT5 checks
-
-Enter container:
+Readiness, used by local tests:
 
 ```bash
-docker exec -it mt5-proxy-scratch bash
+curl http://127.0.0.1:8000/health/ready
 ```
 
-Run Wine sanity as the `trader` user:
+`/health/ready` requires more than an open bridge socket. It connects to the bridge and runs `mt5.initialize()` through the Windows-side MT5 Python API.
 
-```bash
-gosu trader bash -lc 'wine_sanity.sh'
-```
+## 6. Important environment variables
 
-Expected final line:
+| Variable | Default | Meaning |
+|---|---|---|
+| `BASE_IMAGE` | `ubuntu:22.04` | Docker base image |
+| `WINEHQ_UBUNTU_CODENAME` | `jammy` | WineHQ Ubuntu repo codename |
+| `WINEHQ_PACKAGE` | `winehq-staging` | WineHQ package to install |
+| `MT5_AUTOINSTALL` | `true` | Try MT5 installer `/auto` during boot |
+| `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER` | empty | Optional auto-login credentials used by `mt5.initialize()` |
+| `API_KEY` | `dev-api-key` | API key for `/v1/*` endpoints |
+| `TRADING_ENABLED` | `false` | Must be true for mutation/trading endpoints |
+| `READY_MT5_TIMEOUT_MS` | `15000` | Timeout used by `/health/ready` initialization probe |
 
-```text
-WINE_SANITY_PASSED
-```
+## 7. GCP VM access
 
-If you see first-run windows in noVNC, handle them there, then rerun the command.
-
-## 3. Install/login MT5
-
-The container attempts automatic MT5 install with `mt5setup.exe /auto` when `MT5_AUTOINSTALL=true`.
-
-If MT5 is not installed automatically, run:
-
-```bash
-docker exec -it mt5-proxy-scratch bash
-gosu trader bash -lc 'install_mt5_manual.sh'
-```
-
-Then finish the installer in noVNC:
-
-```text
-http://127.0.0.1:3000/vnc.html
-```
-
-After installation, log in manually:
-
-```text
-File -> Login to Trade Account
-```
-
-Enable your symbol:
-
-```text
-View -> Symbols -> EURUSD -> Show Symbol
-```
-
-## 4. Install/check Windows Python and packages
-
-The container also tries this automatically. Manual command:
-
-```bash
-docker exec -it mt5-proxy-scratch bash
-gosu trader bash -lc 'install_wine_python.sh'
-```
-
-## 5. Start MT5 and bridge manually if needed
-
-```bash
-docker exec -it mt5-proxy-scratch bash
-gosu trader bash -lc 'start_mt5.sh'
-gosu trader bash -lc 'start_bridge.sh'
-```
-
-The main supervisor normally starts both automatically. Logs:
-
-```bash
-docker exec -it mt5-proxy-scratch bash -lc 'ls -lh /logs && tail -100 /logs/mt5-stack.log && tail -100 /logs/mt5-bridge.log'
-```
-
-## 6. Test bridge directly
-
-Read-only:
-
-```bash
-docker exec -it mt5-proxy-scratch bash -lc '/opt/mt5-proxy-venv/bin/python /app_tools/direct_bridge_check.py'
-```
-
-Expected:
-
-```text
-READ_ONLY_BRIDGE_TESTS_PASSED
-```
-
-Mutation test on DEMO only:
-
-```bash
-docker exec -it mt5-proxy-scratch bash -lc 'CHECK_PLACE_TRADE=true /opt/mt5-proxy-venv/bin/python /app_tools/direct_bridge_check.py'
-```
-
-## 7. Test Wine-side MetaTrader5 directly
-
-Read-only:
-
-```bash
-docker exec -it mt5-proxy-scratch bash
-gosu trader bash -lc 'wine python /usr/local/bin/mt5_wine_direct_smoke.py'
-```
-
-Mutation test on DEMO only:
-
-```bash
-gosu trader bash -lc 'CHECK_PLACE_TRADE=true wine python /usr/local/bin/mt5_wine_direct_smoke.py'
-```
-
-## 8. Test REST API from host
-
-```bash
-python3 -m venv .venv
-. .venv/bin/activate
-pip install requests
-
-python tests/external_test_all_ops.py \
-  --base-url http://127.0.0.1:8000 \
-  --api-key dev-api-key \
-  --symbol EURUSD
-```
-
-Enable trading endpoints in `.env` only for demo testing:
-
-```env
-TRADING_ENABLED=true
-```
-
-Restart:
-
-```bash
-docker compose up -d --force-recreate
-```
-
-Mutation test:
-
-```bash
-python tests/external_test_all_ops.py \
-  --base-url http://127.0.0.1:8000 \
-  --api-key dev-api-key \
-  --symbol EURUSD \
-  --volume 0.01 \
-  --place-trades
-```
-
-## 9. If Wine services still fail
-
-The default compose already uses:
-
-```yaml
-security_opt:
-  - seccomp=unconfined
-```
-
-If Wine still cannot start service processes, try the diagnostic privileged overlay:
-
-```bash
-docker compose -f docker-compose.yml -f docker-compose.privileged.yml up -d --force-recreate
-```
-
-If that fixes Wine, your Docker runtime/security profile was blocking some Wine service behavior.
-
-## 10. GCP access
-
-Keep compose ports localhost-only on the VM. Tunnel from your laptop:
+Keep ports bound to localhost on the VM and tunnel from your laptop:
 
 ```bash
 gcloud compute ssh YOUR_VM --zone YOUR_ZONE -- \
@@ -232,28 +162,24 @@ http://127.0.0.1:3000/vnc.html
 http://127.0.0.1:8000/health
 ```
 
-## 11. Why no WineHQ apt repo?
+## 8. Logs
 
-Your last build failed because the inherited image had a WineHQ Debian repository but the WineHQ signing key was missing. This from-scratch image avoids that entire path by using Ubuntu repository packages. If you later want WineHQ packages, add the key with `gpg --dearmor` and verify the `.sources` file has `Signed-By=/etc/apt/keyrings/winehq-archive.key` before `apt-get update`.
-
-## Bridge fix notes
-
-The mt5linux bridge server must run in **Windows Python under Wine**:
+Useful logs inside the container:
 
 ```bash
-wine "$WINE_PYTHON_EXE" -m mt5linux --host 0.0.0.0 -p 8001
+/logs/supervisord.log
+/logs/mt5-stack.supervisor.log
+/logs/wine-python-install.log
+/logs/mt5-install.log
+/logs/mt5-terminal.log
+/logs/mt5-bridge.log
+/logs/bridge-init.log
+/logs/api.supervisor.log
 ```
 
-Linux Python is only the client side. If `/logs/mt5-bridge.log` does not exist, the startup sequence has not reached bridge startup yet. The most common reason is Windows Python installation hanging. This version uses the Python 3.9 embeddable ZIP instead of the interactive Windows installer to avoid that hang.
-
-Manual recovery in an existing container:
+From host:
 
 ```bash
-docker exec -it mt5-proxy-scratch bash
-pkill -f python-installer.exe || true
-pkill -f msiexec.exe || true
-gosu trader bash -lc 'wineserver -k || true'
-gosu trader bash -lc 'install_wine_python.sh'
-gosu trader bash -lc 'start_bridge.sh' >/logs/mt5-bridge.log 2>&1 &
-ss -tuln | grep 8001
+docker compose logs -f mt5proxy
+docker exec -it mt5-proxy-scratch bash -lc 'ls -lh /logs && tail -100 /logs/bridge-init.log'
 ```

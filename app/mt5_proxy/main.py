@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import socket
 from datetime import datetime, timezone
 from typing import Any, Optional
 
@@ -58,7 +59,7 @@ def _parse_dt(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _connect_mt5():
+def _connect_mt5(timeout_ms: int | None = None):
     try:
         from mt5linux import MetaTrader5
     except Exception as exc:
@@ -67,7 +68,7 @@ def _connect_mt5():
     try:
         mt5 = MetaTrader5(
             host=os.getenv("MT5LINUX_HOST", "127.0.0.1"),
-            port=int(os.getenv("MT5LINUX_PORT", "18812")),
+            port=int(os.getenv("MT5LINUX_PORT", "8001")),
             timeout=int(os.getenv("MT5LINUX_TIMEOUT", "300")),
         )
     except Exception as exc:
@@ -76,7 +77,7 @@ def _connect_mt5():
             detail=f"Cannot connect to mt5linux bridge. Start MT5 and run start_bridge.sh. Error: {exc}",
         ) from exc
 
-    init_kwargs: dict[str, Any] = {"timeout": int(os.getenv("MT5_TIMEOUT_MS", "60000"))}
+    init_kwargs: dict[str, Any] = {"timeout": timeout_ms if timeout_ms is not None else int(os.getenv("MT5_TIMEOUT_MS", "60000"))}
     if os.getenv("MT5_LOGIN"):
         init_kwargs["login"] = int(os.environ["MT5_LOGIN"])
         init_kwargs["password"] = os.getenv("MT5_PASSWORD", "")
@@ -120,6 +121,41 @@ app = FastAPI(title="MT5 Wine Proxy", version="0.2.0")
 @app.get("/health")
 def health():
     return {"ok": True, "service": "mt5-wine-proxy"}
+
+
+@app.get("/health/live")
+def health_live():
+    return {"ok": True, "service": "mt5-wine-proxy"}
+
+
+@app.get("/health/ready")
+def health_ready():
+    host = os.getenv("MT5LINUX_HOST", "127.0.0.1")
+    port = int(os.getenv("MT5LINUX_PORT", "8001"))
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            pass
+    except OSError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"ok": False, "service": "mt5-wine-proxy", "bridge": {"host": host, "port": port, "listening": False}, "error": str(exc)},
+        ) from exc
+
+    # Readiness must prove more than an open TCP socket: it must be possible to
+    # initialize the MT5 Python API through the Wine-side mt5linux bridge.
+    mt5 = _connect_mt5(timeout_ms=int(os.getenv("READY_MT5_TIMEOUT_MS", "15000")))
+    try:
+        terminal_info = mt5.terminal_info()
+        return {
+            "ok": True,
+            "service": "mt5-wine-proxy",
+            "bridge": {"host": host, "port": port, "listening": True, "initialize": True},
+            "version": _asdict(mt5.version()),
+            "terminal_info": _asdict(terminal_info),
+            "last_error": _asdict(mt5.last_error()),
+        }
+    finally:
+        mt5.shutdown()
 
 
 @app.get("/v1/bridge", dependencies=[Depends(_api_key_guard)])
@@ -306,3 +342,5 @@ def remove_sltp(ticket: int, remove_sl: bool = True, remove_tp: bool = True, dev
         return {"request": request, "result": _asdict(result), "last_error": _asdict(mt5.last_error())}
     finally:
         mt5.shutdown()
+
+
