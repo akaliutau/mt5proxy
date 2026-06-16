@@ -75,7 +75,7 @@ def main():
         "POST",
         f"{base}/v1/deals/open",
         args.api_key,
-        json={"symbol": args.symbol, "side": "buy", "volume": args.volume, "sl": sl, "tp": tp},
+        json={"symbol": args.symbol, "side": "buy", "volume": args.volume, "sl": sl, "tp": tp, "type_filling": "FOK"},
     )
     result = opened.get("result") or {}
     retcode = result.get("retcode")
@@ -96,7 +96,7 @@ def main():
         json={"sl": round(ask - 80 * point, digits), "tp": round(ask + 160 * point, digits)},
     )
     req("DELETE", f"{base}/v1/positions/{ticket}/sltp", args.api_key)
-    req("POST", f"{base}/v1/deals/close", args.api_key, json={"ticket": ticket})
+    req("POST", f"{base}/v1/deals/close", args.api_key, json={"ticket": ticket, "type_filling": "AUTO"})
     print("\nALL_API_MUTATION_TESTS_PASSED")
 
 

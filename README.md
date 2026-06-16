@@ -68,6 +68,12 @@ TRADING_ENABLED=true docker compose up -d --force-recreate
 PLACE_TRADES=true ./tests/run_external_tests.sh
 ```
 
+in terminal: 
+
+```text
+Tools → Options → Expert Advisors → Allow algorithmic trading
+```
+
 ## 3. Clean reset when switching Wine builds
 
 If a previous container created a broken Wine prefix using the wrong Wine packages, reset the local named volumes before retesting:

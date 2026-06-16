@@ -98,13 +98,14 @@ class OpenDealRequest(BaseModel):
     deviation: int = 30
     magic: int = 424242
     comment: str = "mt5-proxy-open"
-    type_filling: str = "IOC"  # IOC, FOK, RETURN
+    type_filling: str = "AUTO"  # IOC, FOK, RETURN
 
 
 class CloseDealRequest(BaseModel):
     ticket: int
     deviation: int = 30
     magic: int = 424242
+    type_filling: str = "AUTO"  # AUTO, FOK, IOC, RETURN
     comment: str = "mt5-proxy-close"
 
 
@@ -264,18 +265,44 @@ def open_deal(req: OpenDealRequest):
 def close_deal(req: CloseDealRequest):
     if os.getenv("TRADING_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=403, detail="TRADING_ENABLED=false")
+
     mt5 = _connect_mt5()
     try:
         pos_list = mt5.positions_get(ticket=req.ticket)
         if not pos_list:
             raise HTTPException(status_code=404, detail="position not found")
+
         pos = pos_list[0]
+
+        mt5.symbol_select(pos.symbol, True)
+
+        info = mt5.symbol_info(pos.symbol)
         tick = mt5.symbol_info_tick(pos.symbol)
+
+        if info is None:
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "symbol not available",
+                    "symbol": pos.symbol,
+                    "last_error": _asdict(mt5.last_error()),
+                },
+            )
+
         if tick is None:
-            raise HTTPException(status_code=400, detail={"message": "tick unavailable", "last_error": _asdict(mt5.last_error())})
+            raise HTTPException(
+                status_code=400,
+                detail={
+                    "message": "tick unavailable",
+                    "symbol": pos.symbol,
+                    "last_error": _asdict(mt5.last_error()),
+                },
+            )
+
         close_type = mt5.ORDER_TYPE_SELL if pos.type == mt5.POSITION_TYPE_BUY else mt5.ORDER_TYPE_BUY
         price = tick.bid if pos.type == mt5.POSITION_TYPE_BUY else tick.ask
-        request = {
+
+        base_request = {
             "action": mt5.TRADE_ACTION_DEAL,
             "position": pos.ticket,
             "symbol": pos.symbol,
@@ -286,13 +313,78 @@ def close_deal(req: CloseDealRequest):
             "magic": req.magic,
             "comment": req.comment,
             "type_time": mt5.ORDER_TIME_GTC,
-            "type_filling": mt5.ORDER_FILLING_IOC,
         }
-        result = mt5.order_send(request)
-        return {"request": request, "result": _asdict(result), "last_error": _asdict(mt5.last_error())}
+
+        filling_map = {
+            "FOK": mt5.ORDER_FILLING_FOK,
+            "IOC": mt5.ORDER_FILLING_IOC,
+            "RETURN": mt5.ORDER_FILLING_RETURN,
+        }
+
+        requested_filling = req.type_filling.upper()
+
+        if requested_filling == "AUTO":
+            # Try all practical filling modes. Some brokers reject IOC on close
+            # even when open succeeded with another mode.
+            filling_candidates = [
+                ("FOK", mt5.ORDER_FILLING_FOK),
+                ("IOC", mt5.ORDER_FILLING_IOC),
+                ("RETURN", mt5.ORDER_FILLING_RETURN),
+            ]
+        else:
+            if requested_filling not in filling_map:
+                raise HTTPException(
+                    status_code=400,
+                    detail=f"unknown type_filling {req.type_filling}; use AUTO, FOK, IOC, or RETURN",
+                )
+            filling_candidates = [(requested_filling, filling_map[requested_filling])]
+
+        filling_attempts = []
+        final_request = None
+        result = None
+
+        for filling_name, filling_value in filling_candidates:
+            request = dict(base_request)
+            request["type_filling"] = filling_value
+            final_request = request
+
+            result = mt5.order_send(request)
+
+            retcode = getattr(result, "retcode", None)
+            comment = getattr(result, "comment", None)
+
+            filling_attempts.append(
+                {
+                    "type_filling_name": filling_name,
+                    "type_filling": filling_value,
+                    "retcode": retcode,
+                    "comment": comment,
+                    "last_error": _asdict(mt5.last_error()),
+                }
+            )
+
+            # Success retcodes:
+            # 10008 = placed
+            # 10009 = done
+            # 10010 = done partial
+            if retcode in {10008, 10009, 10010}:
+                break
+
+            # 10030 = unsupported filling mode; try the next filling mode.
+            if retcode != 10030:
+                break
+
+        return {
+            "request": final_request,
+            "result": _asdict(result),
+            "filling_attempts": filling_attempts,
+            "symbol_filling_mode": getattr(info, "filling_mode", None),
+            "symbol_trade_exemode": getattr(info, "trade_exemode", None),
+            "last_error": _asdict(mt5.last_error()),
+        }
+
     finally:
         mt5.shutdown()
-
 
 @app.post("/v1/positions/{ticket}/sltp", dependencies=[Depends(_api_key_guard)])
 def set_sltp(ticket: int, req: SetSltpRequest):
