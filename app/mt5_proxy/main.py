@@ -2,21 +2,11 @@ from __future__ import annotations
 
 import os
 import socket
-import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from pydantic import BaseModel, Field
-
-APP_VERSION = "0.3.0"
-
-
-def _env_bool(name: str, default: bool = False) -> bool:
-    value = os.getenv(name)
-    if value is None:
-        return default
-    return value.lower() in {"1", "true", "yes", "on"}
 
 
 def _api_key_guard(x_api_key: str | None = Header(default=None)) -> None:
@@ -33,6 +23,7 @@ def _asdict(obj: Any) -> Any:
     if isinstance(obj, dict):
         return {k: _asdict(v) for k, v in obj.items()}
     if isinstance(obj, (list, tuple)):
+        # Namedtuple has _asdict; plain tuple should remain list.
         if hasattr(obj, "_asdict"):
             return {k: _asdict(v) for k, v in obj._asdict().items()}
         return [_asdict(v) for v in obj]
@@ -68,58 +59,34 @@ def _parse_dt(value: str) -> datetime:
     return dt.astimezone(timezone.utc)
 
 
-def _bridge_endpoint() -> tuple[str, int]:
-    return os.getenv("MT5LINUX_HOST", "127.0.0.1"), int(os.getenv("MT5LINUX_PORT", "8001"))
-
-
-def _tcp_open(host: str, port: int, timeout_sec: float = 1.0) -> tuple[bool, str | None]:
-    try:
-        with socket.create_connection((host, port), timeout=timeout_sec):
-            return True, None
-    except OSError as exc:
-        return False, str(exc)
-
-
 def _connect_mt5():
     try:
         from mt5linux import MetaTrader5
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"mt5linux import failed: {exc}") from exc
 
-    host, port = _bridge_endpoint()
-    retries = max(1, int(os.getenv("MT5_CONNECT_RETRIES", "3")))
-    delay = max(0.0, float(os.getenv("MT5_CONNECT_RETRY_DELAY", "2")))
-    timeout = int(os.getenv("MT5LINUX_TIMEOUT", "300"))
-    init_timeout = int(os.getenv("MT5_TIMEOUT_MS", "60000"))
-    last_detail: Any = None
+    try:
+        mt5 = MetaTrader5(
+            host=os.getenv("MT5LINUX_HOST", "127.0.0.1"),
+            port=int(os.getenv("MT5LINUX_PORT", "18812")),
+            timeout=int(os.getenv("MT5LINUX_TIMEOUT", "300")),
+        )
+    except Exception as exc:
+        raise HTTPException(
+            status_code=503,
+            detail=f"Cannot connect to mt5linux bridge. Start MT5 and run start_bridge.sh. Error: {exc}",
+        ) from exc
 
-    for attempt in range(1, retries + 1):
-        mt5 = None
-        initialized = False
-        try:
-            mt5 = MetaTrader5(host=host, port=port, timeout=timeout)
-            init_kwargs: dict[str, Any] = {"timeout": init_timeout}
-            if os.getenv("MT5_LOGIN"):
-                init_kwargs["login"] = int(os.environ["MT5_LOGIN"])
-                init_kwargs["password"] = os.getenv("MT5_PASSWORD", "")
-                init_kwargs["server"] = os.getenv("MT5_SERVER", "")
+    init_kwargs: dict[str, Any] = {"timeout": int(os.getenv("MT5_TIMEOUT_MS", "60000"))}
+    if os.getenv("MT5_LOGIN"):
+        init_kwargs["login"] = int(os.environ["MT5_LOGIN"])
+        init_kwargs["password"] = os.getenv("MT5_PASSWORD", "")
+        init_kwargs["server"] = os.getenv("MT5_SERVER", "")
 
-            initialized = bool(mt5.initialize(**init_kwargs))
-            if initialized:
-                return mt5
-            last_detail = {"message": "mt5.initialize failed", "last_error": _asdict(mt5.last_error()), "attempt": attempt}
-        except Exception as exc:
-            last_detail = {"message": f"Cannot connect to mt5linux bridge at {host}:{port}", "error": str(exc), "attempt": attempt}
-        finally:
-            if mt5 is not None and not initialized:
-                try:
-                    mt5.shutdown()
-                except Exception:
-                    pass
-        if attempt < retries:
-            time.sleep(delay)
-
-    raise HTTPException(status_code=503, detail=last_detail)
+    ok = mt5.initialize(**init_kwargs)
+    if not ok:
+        raise HTTPException(status_code=503, detail={"message": "mt5.initialize failed", "last_error": _asdict(mt5.last_error())})
+    return mt5
 
 
 class OpenDealRequest(BaseModel):
@@ -148,54 +115,33 @@ class SetSltpRequest(BaseModel):
     comment: str = "mt5-proxy-sltp"
 
 
-app = FastAPI(title="MT5 Wine Proxy", version=APP_VERSION)
+app = FastAPI(title="MT5 Wine Proxy", version="0.2.0")
 
 
 @app.get("/health")
 def health():
-    return {
-        "ok": True,
-        "service": "mt5-wine-proxy",
-        "version": APP_VERSION,
-        "time": datetime.now(timezone.utc).isoformat(),
-        "pid": os.getpid(),
-    }
+    return {"ok": True, "service": "mt5-wine-proxy"}
 
 
 @app.get("/ready")
-def ready(
-    deep: bool = Query(False, description="When true, initialize MT5 through the bridge."),
-    x_api_key: str | None = Header(default=None),
-):
-    if deep:
-        _api_key_guard(x_api_key)
-    host, port = _bridge_endpoint()
-    bridge_open, bridge_error = _tcp_open(host, port)
-    payload: dict[str, Any] = {
-        "ok": bridge_open,
-        "service": "mt5-wine-proxy",
-        "bridge": {"host": host, "port": port, "tcp_open": bridge_open, "error": bridge_error},
-        "deep": deep,
-    }
-    if not bridge_open:
-        raise HTTPException(status_code=503, detail=payload)
+def ready(deep: bool = False, _guard: None = Depends(_api_key_guard)):
+    host = os.getenv("MT5LINUX_HOST", "127.0.0.1")
+    port = int(os.getenv("MT5LINUX_PORT", "8001"))
+    payload = {"ok": True, "service": "mt5-wine-proxy", "bridge": {"host": host, "port": port}, "deep": deep}
+    try:
+        with socket.create_connection((host, port), timeout=3):
+            payload["bridge"]["tcp_open"] = True
+    except Exception as exc:
+        payload["ok"] = False
+        payload["bridge"]["tcp_open"] = False
+        payload["bridge"]["error"] = str(exc)
+        raise HTTPException(status_code=503, detail=payload) from exc
     if not deep:
         return payload
-
     mt5 = _connect_mt5()
     try:
-        account = mt5.account_info()
-        payload.update(
-            {
-                "ok": account is not None,
-                "version_info": _asdict(mt5.version()),
-                "terminal_info": _asdict(mt5.terminal_info()),
-                "account": _asdict(account),
-                "last_error": _asdict(mt5.last_error()),
-            }
-        )
-        if account is None:
-            raise HTTPException(status_code=503, detail=payload)
+        payload["terminal_info"] = _asdict(mt5.terminal_info())
+        payload["last_error"] = _asdict(mt5.last_error())
         return payload
     finally:
         mt5.shutdown()
@@ -270,7 +216,7 @@ def positions(symbol: str | None = None):
 
 @app.post("/v1/deals/open", dependencies=[Depends(_api_key_guard)])
 def open_deal(req: OpenDealRequest):
-    if not _env_bool("TRADING_ENABLED", False):
+    if os.getenv("TRADING_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=403, detail="TRADING_ENABLED=false")
     mt5 = _connect_mt5()
     try:
@@ -305,7 +251,7 @@ def open_deal(req: OpenDealRequest):
 
 @app.post("/v1/deals/close", dependencies=[Depends(_api_key_guard)])
 def close_deal(req: CloseDealRequest):
-    if not _env_bool("TRADING_ENABLED", False):
+    if os.getenv("TRADING_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=403, detail="TRADING_ENABLED=false")
     mt5 = _connect_mt5()
     try:
@@ -339,7 +285,7 @@ def close_deal(req: CloseDealRequest):
 
 @app.post("/v1/positions/{ticket}/sltp", dependencies=[Depends(_api_key_guard)])
 def set_sltp(ticket: int, req: SetSltpRequest):
-    if not _env_bool("TRADING_ENABLED", False):
+    if os.getenv("TRADING_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=403, detail="TRADING_ENABLED=false")
     mt5 = _connect_mt5()
     try:
@@ -364,7 +310,7 @@ def set_sltp(ticket: int, req: SetSltpRequest):
 
 @app.delete("/v1/positions/{ticket}/sltp", dependencies=[Depends(_api_key_guard)])
 def remove_sltp(ticket: int, remove_sl: bool = True, remove_tp: bool = True, deviation: int = 30):
-    if not _env_bool("TRADING_ENABLED", False):
+    if os.getenv("TRADING_ENABLED", "false").lower() not in {"1", "true", "yes", "on"}:
         raise HTTPException(status_code=403, detail="TRADING_ENABLED=false")
     mt5 = _connect_mt5()
     try:

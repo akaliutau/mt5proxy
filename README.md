@@ -1,93 +1,26 @@
-# MT5 Proxy supervised Docker image
+# MT5 Proxy Docker image — original bridge, automated runtime
 
-This image runs MetaTrader 5 under WineHQ, exposes a Windows-side `mt5linux` bridge, and serves a FastAPI REST proxy. It is designed for local validation first and then deployment to a long-running VM such as GCP Compute Engine.
+This version deliberately keeps the original working Wine/MT5/bridge path intact.
+The bridge is still started exactly as before from `mt5-stack.sh`:
 
-The important change: **you no longer manually run** `install_wine_python.sh`, `start_mt5.sh`, or `start_bridge.sh` after image creation. They are runtime-supervised by `supervisord` + `mt5-stack.sh` + `healthwatch.sh`.
+```bash
+wine "$WINE_PYTHON_EXE" -m mt5linux --host 0.0.0.0 -p 8001
+```
 
-## What is inside
+Automation is added around the original scripts only:
 
-- Ubuntu base image, default `ubuntu:22.04`
-- WineHQ package from the WineHQ apt repository, default `winehq-staging`
-- Xvfb virtual display
-- Fluxbox desktop
-- x11vnc + noVNC browser desktop
-- MetaTrader 5 under Wine
-- Windows Python 3.9 embeddable runtime inside the Wine prefix
-- Windows `MetaTrader5`, `mt5linux`, and `rpyc` packages
-- `mt5linux` bridge on port `8001`
-- FastAPI proxy on port `8000`
-- Supervisor/self-healing for API, VNC/noVNC, MT5 terminal, and bridge
+- `docker compose up -d` starts Xvfb, Fluxbox, x11vnc, noVNC, FastAPI, MT5, Wine Python setup, and the bridge.
+- `start-all.sh` restarts dead Linux-side services and restarts `mt5-stack.sh` if it exits.
+- `mt5-stack.sh` keeps the original MT5/bridge self-healing loop.
+- Docker Compose uses `restart: unless-stopped` for VM/GCP deployment.
+- No Supervisor is used in this build.
 
-## Ports
-
-| Host URL/port | Container | Purpose |
-|---|---:|---|
-| `http://127.0.0.1:3000/vnc.html` | `6080` | noVNC desktop |
-| `127.0.0.1:5900` | `5900` | raw VNC |
-| `http://127.0.0.1:8000/health` | `8000` | REST API health |
-| `http://127.0.0.1:8000/ready?deep=true` | `8000` | API + bridge + MT5 readiness |
-| `127.0.0.1:8001` | `8001` | mt5linux bridge debug |
-
-All compose ports are bound to `127.0.0.1` by default. This is intentional for GCP VM deployment through SSH tunnels.
-
-## 1. Local build/run/test flow
+## Local run
 
 ```bash
 cp .env.example .env
 nano .env
-
-sudo docker compose --env-file ".env" -f "docker-compose.yml" build "$@"
-sudo docker images
-sudo docker compose --env-file ".env" -f "docker-compose.yml" up -d --remove-orphans "$@"
-```
-
-`local_run.sh` builds and starts the container. `local_test.sh` is external to the container and waits for `/ready?deep=true`, then runs the REST API read-only test suite.
-
-First startup may take time because the running container initializes the Wine prefix, installs Windows Python into `/config/.wine/drive_c/Python39`, installs MT5 if enabled, starts MT5, and starts the bridge.
-
-## 2. Expected services
-
-```bash
-sudo docker compose ps
-sudo docker compose logs -f mt5proxy
-```
-
-Inside the container:
-
-```bash
-sudo docker exec -it mt5-proxy supervisorctl -c /etc/supervisor/conf.d/mt5proxy.conf status
-```
-
-Expected supervisor programs:
-
-- `xvfb`
-- `fluxbox`
-- `x11vnc`
-- `novnc`
-- `api`
-- `mt5stack`
-- `healthwatch`
-
-## 3. Health and readiness
-
-Fast API only:
-
-```bash
-curl http://127.0.0.1:8000/health
-```
-
-Deep readiness, including bridge and MT5 account:
-
-```bash
-curl -H 'X-API-Key: dev-api-key' 'http://127.0.0.1:8000/ready?deep=true'
-```
-
-## 4. MT5 login
-
-The container attempts automatic MT5 install with `mt5setup.exe /auto` when:
-
-```env
-MT5_AUTOINSTALL=true
+./tests/local_run.sh
 ```
 
 Open noVNC:
@@ -96,156 +29,50 @@ Open noVNC:
 http://127.0.0.1:3000/vnc.html
 ```
 
-Then log in manually inside MT5 if your broker credentials were not supplied via environment:
+Readiness:
 
-```text
-File -> Login to Trade Account
+```bash
+curl -H 'X-API-Key: dev-api-key' 'http://127.0.0.1:8000/ready?deep=true'
 ```
 
-Enable your symbol if needed:
-
-```text
-View -> Symbols -> EURUSD -> Show Symbol
-```
-
-## 5. Read-only external API test
+Run external tests:
 
 ```bash
 ./tests/local_test.sh
 ```
 
-Expected final line:
-
-```text
-LOCAL_READ_ONLY_TESTS_PASSED
-```
-
-## 6. Demo mutation test
-
-Only use this on a demo account.
-
-```env
-TRADING_ENABLED=true
-```
-
-Restart after changing `.env`:
+Demo mutation test only:
 
 ```bash
-docker compose up -d --force-recreate
+# set TRADING_ENABLED=true first
 ./tests/local_test.sh --place-trades
 ```
 
-Expected final line:
-
-```text
-LOCAL_MUTATION_TESTS_PASSED
-```
-
-## 7. Direct bridge test from inside the container
-
-Read-only:
+## Restart bridge only
 
 ```bash
-docker exec -it mt5-proxy bash -lc '/opt/mt5-proxy-venv/bin/python /app_tools/direct_bridge_check.py'
+docker compose exec mt5proxy bash -lc 'gosu trader restart_bridge_original.sh'
 ```
 
-Mutation test on demo only:
+## Clean persistent Wine prefix after experimental/broken builds
+
+Previous failed experimental images may have modified the persistent `/config/.wine` volume. To preserve it before reset:
 
 ```bash
-docker exec -it mt5-proxy bash -lc 'CHECK_PLACE_TRADE=true /opt/mt5-proxy-venv/bin/python /app_tools/direct_bridge_check.py'
+docker compose down
+vol=$(docker volume ls --format '{{.Name}}' | grep 'mt5proxy_config' | head -1)
+docker run --rm -v "$vol:/config" busybox sh -lc 'mv /config/.wine /config/.wine.broken.$(date +%s) 2>/dev/null || true'
+docker compose up -d --force-recreate
 ```
 
-## 8. Self-healing design
+Then initialize/login MT5 in noVNC if needed. The original stack will install Windows Python and start the bridge automatically.
 
-Docker Compose:
+## GCP VM
 
-```yaml
-restart: unless-stopped
-healthcheck:
-  test: ["CMD", "/usr/local/bin/container_healthcheck.sh"]
-```
-
-Inside the container:
-
-- `supervisord` restarts crashed long-running processes.
-- `mt5-stack.sh` repeatedly repairs/starts Wine Python, MT5 terminal, and the bridge.
-- `healthwatch.sh` restarts supervisor programs when HTTP/port health checks fail.
-- The API has `/health` and `/ready` endpoints for local/GCP checks.
-
-## 9. WineHQ package selection
-
-Default:
-
-```env
-WINEHQ_PACKAGE=winehq-staging
-BASE_IMAGE=ubuntu:22.04
-WINEHQ_DISTRO_CODENAME=
-```
-
-`WINEHQ_DISTRO_CODENAME` can be left empty. The Dockerfile reads the base OS codename, for example `jammy` for `ubuntu:22.04`, and downloads the matching WineHQ `.sources` file.
-
-Use a different branch if needed:
-
-```env
-WINEHQ_PACKAGE=winehq-devel
-```
-
-or:
-
-```env
-WINEHQ_PACKAGE=winehq-stable
-```
-
-## 10. GCP VM deployment
-
-Keep ports localhost-only on the VM and tunnel from your laptop:
+Keep ports bound to `127.0.0.1` and tunnel from your laptop:
 
 ```bash
 gcloud compute ssh YOUR_VM --zone YOUR_ZONE -- \
   -L 3000:127.0.0.1:3000 \
   -L 8000:127.0.0.1:8000
-```
-
-Open locally:
-
-```text
-http://127.0.0.1:3000/vnc.html
-http://127.0.0.1:8000/health
-```
-
-Optional systemd unit is included at:
-
-```text
-deploy/systemd/mt5proxy.service
-```
-
-## 11. Troubleshooting
-
-Logs:
-
-```bash
-docker compose logs -f mt5proxy
-ls -lh logs
-```
-
-Useful files:
-
-```text
-logs/supervisord.log
-logs/mt5-stack.log
-logs/install-wine-python.log
-logs/mt5-terminal.log
-logs/mt5-bridge.log
-logs/api.log
-logs/healthwatch.log
-```
-
-Manual commands still exist for recovery/debugging, but normal operation should not require them:
-
-```bash
-docker exec -it mt5-proxy bash
-gosu trader bash -lc 'wine_sanity.sh'
-gosu trader bash -lc 'install_wine_python.sh'
-gosu trader bash -lc 'start_mt5.sh'
-gosu trader bash -lc 'start_bridge.sh'
 ```

@@ -3,33 +3,29 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      args:
-        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
-        WINEHQ_PACKAGE: ${WINEHQ_PACKAGE:-winehq-staging}
-        WINEHQ_DISTRO_CODENAME: ${WINEHQ_DISTRO_CODENAME:-}
-    image: ${IMAGE_NAME:-mt5proxy:local}
-    container_name: ${CONTAINER_NAME:-mt5-proxy}
+    image: mt5proxy:local
+    container_name: mt5-proxy-scratch
     restart: unless-stopped
-    shm_size: ${SHM_SIZE:-1gb}
-    security_opt:
-      - seccomp=unconfined
     env_file:
       - .env
+    shm_size: "1gb"
+    security_opt:
+      - seccomp=unconfined
     ports:
-      - "127.0.0.1:${NOVNC_HOST_PORT:-3000}:6080"
-      - "127.0.0.1:${VNC_HOST_PORT:-5900}:5900"
-      - "127.0.0.1:${API_HOST_PORT:-8000}:8000"
-      - "127.0.0.1:${BRIDGE_HOST_PORT:-8001}:8001"
+      - "127.0.0.1:3000:6080"
+      - "127.0.0.1:5900:5900"
+      - "127.0.0.1:8000:8000"
+      - "127.0.0.1:8001:8001"
     volumes:
-      - mt5_config:/config
-      - ./logs:/logs
+      - mt5proxy_config:/config
+      - mt5proxy_logs:/logs
     healthcheck:
       test: ["CMD", "/usr/local/bin/container_healthcheck.sh"]
       interval: 30s
       timeout: 10s
-      start_period: 120s
-      retries: 3
-    stop_grace_period: 60s
+      start_period: 180s
+      retries: 5
 
 volumes:
-  mt5_config:
+  mt5proxy_config:
+  mt5proxy_logs:

@@ -127,5 +127,3 @@ close_req = {
 print("close:", mt5.order_send(close_req), "last_error:", mt5.last_error())
 print("ALL_WINE_MT5_MUTATION_TESTS_PASSED")
 mt5.shutdown()
-
-

@@ -32,20 +32,9 @@ RPYC_VERSION="${WINDOWS_RPYC_VERSION:-6.0.2}"
 log() { echo "[$(date -Is)] $*"; }
 
 ensure_x() {
-  mkdir -p /tmp/.X11-unix
-  chmod 1777 /tmp/.X11-unix || true
-  if ! xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
-    local display_num="${DISPLAY#:}"
-    display_num="${display_num%%.*}"
-    rm -f "/tmp/.X${display_num}-lock" "/tmp/.X11-unix/X${display_num}" 2>/dev/null || true
+  if ! pgrep -x Xvfb >/dev/null 2>&1; then
     Xvfb "$DISPLAY" -screen 0 1280x900x24 +extension GLX +render -noreset >/tmp/xvfb-install-python.log 2>&1 &
-    for _ in $(seq 1 30); do
-      xdpyinfo -display "$DISPLAY" >/dev/null 2>&1 && return 0
-      sleep 1
-    done
-    echo "ERROR: Xvfb did not become ready on $DISPLAY" >&2
-    cat /tmp/xvfb-install-python.log 2>/dev/null || true
-    return 1
+    sleep 2
   fi
 }
 
@@ -163,5 +152,3 @@ main() {
 }
 
 main "$@"
-
-

@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-set -u -o pipefail
+set -u
 
 export HOME=/home/trader
 export USER=trader
@@ -11,26 +11,22 @@ export LIBGL_ALWAYS_SOFTWARE="${LIBGL_ALWAYS_SOFTWARE:-1}"
 export MESA_LOADER_DRIVER_OVERRIDE="${MESA_LOADER_DRIVER_OVERRIDE:-llvmpipe}"
 export WINEDLLOVERRIDES="${WINEDLLOVERRIDES:-mscoree=d;mshtml=d;winemenubuilder.exe=d}"
 export NO_AT_BRIDGE=1
-export PYTHONIOENCODING="${PYTHONIOENCODING:-utf-8}"
 
 MT5_FILE="${MT5_FILE:-/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe}"
-BRIDGE_HOST="${MT5LINUX_BIND_HOST:-0.0.0.0}"
 BRIDGE_PORT="${MT5LINUX_PORT:-8001}"
+PYVENV=/opt/mt5-proxy-venv/bin/python
+PYTHON_WIN_URL="${PYTHON_WIN_URL:-https://www.python.org/ftp/python/3.9.13/python-3.9.13-amd64.exe}"
+PYTHON_EMBED_URL="${PYTHON_EMBED_URL:-https://www.python.org/ftp/python/3.9.13/python-3.9.13-embed-amd64.zip}"
+GET_PIP_URL="${GET_PIP_URL:-https://bootstrap.pypa.io/pip/3.9/get-pip.py}"
 WINE_PYTHON_DIR="${WINE_PYTHON_DIR:-$WINEPREFIX/drive_c/Python39}"
 WINE_PYTHON_EXE="${WINE_PYTHON_EXE:-$WINE_PYTHON_DIR/python.exe}"
 MT5_SETUP_URL="${MT5_SETUP_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}"
 WINE_MONO_URL="${WINE_MONO_URL:-https://dl.winehq.org/wine/wine-mono/10.3.0/wine-mono-10.3.0-x86.msi}"
-BOOTSTRAP_INTERVAL="${MT5_BOOTSTRAP_INTERVAL:-300}"
-WATCH_INTERVAL="${MT5_WATCH_INTERVAL:-20}"
-INSTALL_TIMEOUT="${INSTALL_WINE_PYTHON_TIMEOUT:-900}"
-BRIDGE_START_TIMEOUT="${BRIDGE_START_TIMEOUT:-45}"
-
-mkdir -p /logs /config /run/mt5-proxy "$WINEPREFIX"
 
 log() { echo "[$(date -Is)] $*"; }
 
 wait_for_x() {
-  for _ in $(seq 1 90); do
+  for _ in {1..60}; do
     if xdpyinfo -display "$DISPLAY" >/dev/null 2>&1; then
       return 0
     fi
@@ -41,34 +37,35 @@ wait_for_x() {
 }
 
 wine_ok() {
-  timeout 30 wine cmd /c echo OK >/tmp/wine-ok.txt 2>/tmp/wine-ok.err && grep -q OK /tmp/wine-ok.txt
+  wine cmd /c echo OK >/tmp/wine-ok.txt 2>/tmp/wine-ok.err && grep -q OK /tmp/wine-ok.txt
 }
 
 init_wine() {
   mkdir -p "$WINEPREFIX"
   log "Wine version: $(wine --version 2>/dev/null || echo missing)"
   log "Initializing Wine prefix: $WINEPREFIX"
-  timeout 120 wineboot --init || true
-  timeout 120 wineserver -w || true
+  wineboot --init || true
+  wineserver -w || true
   if wine_ok; then
     log "Wine cmd sanity OK"
   else
-    log "WARN: wine cmd sanity failed. Continuing because GUI may still need first-run setup."
+    log "WARN: wine cmd sanity failed. See /tmp/wine-ok.err. Continuing because GUI may still need first-run setup."
     cat /tmp/wine-ok.err 2>/dev/null || true
   fi
-  timeout 30 wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f >/dev/null 2>&1 || true
+  wine reg add "HKEY_CURRENT_USER\\Software\\Wine" /v Version /t REG_SZ /d "win10" /f >/dev/null 2>&1 || true
 }
 
 install_mono() {
+  # Avoid interactive Wine Mono popup by installing explicitly. Failure is non-fatal for MT5 startup.
   if [[ -d "$WINEPREFIX/drive_c/windows/mono" ]]; then
     log "Wine Mono appears installed"
     return 0
   fi
   log "Installing Wine Mono non-interactively"
   mkdir -p "$WINEPREFIX/drive_c"
-  curl -L --retry 3 --connect-timeout 20 -o "$WINEPREFIX/drive_c/wine-mono.msi" "$WINE_MONO_URL" || return 0
-  WINEDLLOVERRIDES="mscoree=d" timeout 180 wine msiexec /i "$WINEPREFIX/drive_c/wine-mono.msi" /qn || true
-  timeout 120 wineserver -w || true
+  curl -L --retry 3 -o "$WINEPREFIX/drive_c/wine-mono.msi" "$WINE_MONO_URL" || return 0
+  WINEDLLOVERRIDES="mscoree=d" wine msiexec /i "$WINEPREFIX/drive_c/wine-mono.msi" /qn || true
+  wineserver -w || true
   rm -f "$WINEPREFIX/drive_c/wine-mono.msi"
 }
 
@@ -78,68 +75,58 @@ install_mt5_if_needed() {
     return 0
   fi
   if [[ "${MT5_AUTOINSTALL:-true}" != "true" ]]; then
-    log "MT5 is not installed and MT5_AUTOINSTALL=false. Use noVNC and run install_mt5_manual.sh if needed."
-    return 1
+    log "MT5 is not installed and MT5_AUTOINSTALL=false. Use noVNC and run install_mt5_manual.sh."
+    return 0
   fi
   log "Downloading MT5 installer"
-  curl -L --retry 3 --connect-timeout 20 -o /tmp/mt5setup.exe "$MT5_SETUP_URL" || { log "MT5 download failed"; return 1; }
-  log "Running MT5 installer with /auto"
-  timeout "${MT5_INSTALL_TIMEOUT:-600}" wine /tmp/mt5setup.exe /auto || true
-  timeout 180 wineserver -w || true
+  curl -L --retry 3 -o /tmp/mt5setup.exe "$MT5_SETUP_URL" || { log "MT5 download failed"; return 0; }
+  log "Running MT5 installer with /auto. If it does not finish, open noVNC and run install_mt5_manual.sh."
+  wine /tmp/mt5setup.exe /auto || true
+  wineserver -w || true
   rm -f /tmp/mt5setup.exe
   if [[ -f "$MT5_FILE" ]]; then
     log "MT5 installed successfully"
-    return 0
+  else
+    log "WARN: MT5 installer did not create $MT5_FILE"
   fi
-  log "WARN: MT5 installer did not create $MT5_FILE"
-  return 1
 }
 
 start_mt5() {
   if [[ ! -f "$MT5_FILE" ]]; then
-    log "MT5 file not found; terminal cannot start yet"
+    log "MT5 file not found; cannot start terminal yet"
     return 1
   fi
   if pgrep -f "terminal64.exe" >/dev/null 2>&1; then
+    log "MT5 terminal already running"
     return 0
   fi
   log "Starting MT5 terminal"
-  wine "$MT5_FILE" ${MT5_CMD_OPTIONS:-} >>/logs/mt5-terminal.log 2>&1 &
+  wine "$MT5_FILE" ${MT5_CMD_OPTIONS:-} >/logs/mt5-terminal.log 2>&1 &
   sleep 10
-  if pgrep -f "terminal64.exe" >/dev/null 2>&1; then
-    log "MT5 terminal is running"
-    return 0
-  fi
-  log "WARN: MT5 terminal process was not detected after start"
-  tail -80 /logs/mt5-terminal.log 2>/dev/null || true
-  return 1
+  return 0
 }
 
-ensure_wine_python() {
-  if [[ -f "$WINE_PYTHON_EXE" ]] && timeout 60 wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('imports OK')" >/tmp/mt5-import.txt 2>&1; then
-    return 0
-  fi
-  log "Windows Python or required packages are missing/broken; repairing"
-  cat /tmp/mt5-import.txt 2>/dev/null || true
-  flock /run/mt5-proxy/install-wine-python.lock timeout "$INSTALL_TIMEOUT" install_wine_python.sh >>/logs/install-wine-python.log 2>&1
+install_wine_python() {
+  log "Ensuring Windows embeddable Python and MT5 bridge packages"
+  install_wine_python.sh
 }
-
 start_bridge() {
   if ss -tuln | grep -q ":$BRIDGE_PORT "; then
+    log "mt5linux bridge already listening on $BRIDGE_PORT"
     return 0
   fi
   if [[ ! -f "$WINE_PYTHON_EXE" ]]; then
     log "WARN: Windows Python is missing: $WINE_PYTHON_EXE; bridge not started"
     return 1
   fi
-  if ! timeout 60 wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('imports OK')" >/tmp/mt5-import.txt 2>&1; then
+  if ! wine "$WINE_PYTHON_EXE" -c "import MetaTrader5, mt5linux, rpyc; print('imports OK')" >/tmp/mt5-import.txt 2>&1; then
     log "WARN: Wine Python cannot import MetaTrader5/mt5linux/rpyc; bridge not started"
     cat /tmp/mt5-import.txt 2>/dev/null || true
     return 1
   fi
-  log "Starting Windows-side mt5linux bridge on ${BRIDGE_HOST}:${BRIDGE_PORT}"
-  wine "$WINE_PYTHON_EXE" -m mt5linux --host "$BRIDGE_HOST" -p "$BRIDGE_PORT" >>/logs/mt5-bridge.log 2>&1 &
-  for _ in $(seq 1 "$BRIDGE_START_TIMEOUT"); do
+  log "Starting Windows-side mt5linux bridge on 0.0.0.0:$BRIDGE_PORT"
+  wine "$WINE_PYTHON_EXE" -m mt5linux --host 0.0.0.0 -p "$BRIDGE_PORT" >/logs/mt5-bridge.log 2>&1 &
+  for _ in {1..30}; do
     if ss -tuln | grep -q ":$BRIDGE_PORT "; then
       log "mt5linux bridge is listening on $BRIDGE_PORT"
       return 0
@@ -150,37 +137,22 @@ start_bridge() {
   tail -100 /logs/mt5-bridge.log 2>/dev/null || true
   return 1
 }
-
-bootstrap_once() {
+main() {
   wait_for_x || true
-  init_wine || true
+  init_wine
   install_mono || true
-  ensure_wine_python || true
   install_mt5_if_needed || true
   start_mt5 || true
+  install_wine_python || true
   start_bridge || true
-}
 
-main() {
-  local last_bootstrap=0 now
-  bootstrap_once
-  last_bootstrap=$(date +%s)
   while true; do
-    sleep "$WATCH_INTERVAL"
-    now=$(date +%s)
-
-    if (( now - last_bootstrap >= BOOTSTRAP_INTERVAL )); then
-      ensure_wine_python || true
-      install_mt5_if_needed || true
-      last_bootstrap=$now
-    fi
-
+    sleep 30
     if [[ -f "$MT5_FILE" ]] && ! pgrep -f "terminal64.exe" >/dev/null 2>&1; then
       log "MT5 terminal not detected; restarting"
       start_mt5 || true
     fi
-
-    if [[ -f "$WINE_PYTHON_EXE" ]] && ! ss -tuln | grep -q ":$BRIDGE_PORT "; then
+    if ! ss -tuln | grep -q ":$BRIDGE_PORT "; then
       log "Bridge not detected; restarting"
       start_bridge || true
     fi

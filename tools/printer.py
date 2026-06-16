@@ -54,5 +54,3 @@ if __name__ == "__main__":
     ALLOWED_EXTENSIONS = ['.py', '.j2', '.md', '.sh']
 
     dump_folder_contents(TARGET_FOLDER, OUTPUT_FILE, ALLOWED_EXTENSIONS)
-
-

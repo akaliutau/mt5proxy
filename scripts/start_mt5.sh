@@ -14,5 +14,3 @@ if [[ ! -f "$MT5_FILE" ]]; then
 fi
 wine "$MT5_FILE" ${MT5_CMD_OPTIONS:-} >/logs/mt5-terminal-manual.log 2>&1 &
 echo "Started MT5. Log: /logs/mt5-terminal-manual.log"
-
-

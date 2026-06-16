@@ -1,10 +1,7 @@
 .git
 .venv
-.venv-*
 __pycache__
 *.pyc
-logs
+*.log
 .env
-*.zip
-*.tar
-*.tar.gz
+mt5proxy_*.zip
