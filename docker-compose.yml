@@ -1,0 +1,72 @@
+services:
+  mt5proxy:
+    build:
+      context: .
+      dockerfile: Dockerfile
+      args:
+        BASE_IMAGE: ${BASE_IMAGE:-ubuntu:22.04}
+        WINEHQ_UBUNTU_CODENAME: ${WINEHQ_UBUNTU_CODENAME:-jammy}
+        WINEHQ_PACKAGE: ${WINEHQ_PACKAGE:-winehq-staging}
+    image: mt5-proxy-scratch:local
+    container_name: mt5-proxy-scratch
+    restart: unless-stopped
+    init: true
+    shm_size: "1gb"
+    security_opt:
+      - seccomp=unconfined
+    environment:
+      API_KEY: ${API_KEY:-dev-api-key}
+      TRADING_ENABLED: ${TRADING_ENABLED:-false}
+      DISPLAY: :99
+      SCREEN_WIDTH: ${SCREEN_WIDTH:-1280}
+      SCREEN_HEIGHT: ${SCREEN_HEIGHT:-900}
+      SCREEN_DEPTH: ${SCREEN_DEPTH:-24}
+      VNC_PASSWORD: ${VNC_PASSWORD:-}
+      VNC_PORT: "5900"
+      NOVNC_PORT: "6080"
+      WINEPREFIX: /config/.wine
+      WINEARCH: win64
+      WINEDEBUG: -all
+      LIBGL_ALWAYS_SOFTWARE: "1"
+      MESA_LOADER_DRIVER_OVERRIDE: llvmpipe
+      WINEDLLOVERRIDES: "mscoree=d;mshtml=d;winemenubuilder.exe=d"
+      MT5_AUTOINSTALL: ${MT5_AUTOINSTALL:-true}
+      MT5_SETUP_URL: ${MT5_SETUP_URL:-https://download.mql5.com/cdn/web/metaquotes.software.corp/mt5/mt5setup.exe}
+      MT5_FILE: "/config/.wine/drive_c/Program Files/MetaTrader 5/terminal64.exe"
+      MT5_CMD_OPTIONS: ${MT5_CMD_OPTIONS:-}
+      MT5LINUX_HOST: 127.0.0.1
+      MT5LINUX_PORT: "8001"
+      MT5LINUX_TIMEOUT: ${MT5LINUX_TIMEOUT:-300}
+      MT5_TIMEOUT_MS: ${MT5_TIMEOUT_MS:-60000}
+      READY_MT5_TIMEOUT_MS: ${READY_MT5_TIMEOUT_MS:-15000}
+      BRIDGE_INIT_RETRY_SECONDS: ${BRIDGE_INIT_RETRY_SECONDS:-60}
+      BRIDGE_INIT_TIMEOUT_SECONDS: ${BRIDGE_INIT_TIMEOUT_SECONDS:-120}
+      MT5_LOGIN: ${MT5_LOGIN:-}
+      MT5_PASSWORD: ${MT5_PASSWORD:-}
+      MT5_SERVER: ${MT5_SERVER:-}
+      MT5_TEST_SYMBOL: ${MT5_TEST_SYMBOL:-EURUSD}
+      MT5_TEST_VOLUME: ${MT5_TEST_VOLUME:-0.01}
+    ports:
+      # Desktop in browser. Open http://127.0.0.1:3000/vnc.html
+      - "127.0.0.1:3000:6080"
+      # Raw VNC for Remmina/TigerVNC if needed.
+      - "127.0.0.1:5900:5900"
+      # REST API.
+      - "127.0.0.1:8000:8000"
+      # mt5linux bridge, exposed for debugging only.
+      - "127.0.0.1:8001:8001"
+    volumes:
+      - mt5_config:/config
+      - mt5_logs:/logs
+    healthcheck:
+      test: ["CMD-SHELL", "curl -fsS http://127.0.0.1:8000/health >/dev/null || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 120s
+
+volumes:
+  mt5_config:
+  mt5_logs:
+
+
