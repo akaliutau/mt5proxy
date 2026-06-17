@@ -112,7 +112,7 @@ COPY app/requirements-api.txt /app/requirements-api.txt
 COPY app/requirements-bridge.txt /app/requirements-bridge.txt
 RUN /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir -r /app/requirements-api.txt \
     && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir --no-deps mt5linux==1.0.3 \
-    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir 'rpyc==6.0.2' 'plumbum>=1.8,<2' 'pyxdg>=0.28,<1' 'numpy>=1.26.4,<2'
+    && /opt/mt5-proxy-venv/bin/python -m pip install --no-cache-dir 'rpyc' 'plumbum' 'pyxdg>=0.28,<1' 'numpy>=1.26.4,<2'
 
 RUN groupadd -g 1000 trader \
     && useradd -m -u 1000 -g trader -s /bin/bash trader \

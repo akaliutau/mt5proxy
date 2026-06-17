@@ -13,13 +13,13 @@ Important implementation points:
 
 ## Ports
 
-| Host URL/port | Container | Purpose |
-|---|---:|---|
-| `http://127.0.0.1:3000/vnc.html` | `6080` | noVNC desktop |
-| `127.0.0.1:5900` | `5900` | raw VNC |
-| `http://127.0.0.1:8000/health` | `8000` | REST API liveness |
-| `http://127.0.0.1:8000/health/ready` | `8000` | bridge + MT5 initialize readiness |
-| `127.0.0.1:8001` | `8001` | mt5linux bridge debug |
+| Host URL/port                        | Container | Purpose                           |
+|--------------------------------------|----------:|-----------------------------------|
+| `http://127.0.0.1:3000/vnc.html`     |    `6080` | noVNC desktop                     |
+| `127.0.0.1:5900`                     |    `5900` | raw VNC                           |
+| `http://127.0.0.1:8000/health`       |    `8000` | REST API liveness                 |
+| `http://127.0.0.1:8000/health/ready` |    `8000` | bridge + MT5 initialize readiness |
+| `127.0.0.1:8001`                     |    `8001` | mt5linux bridge debug             |
 
 All compose ports are bound to `127.0.0.1` by default, suitable for a GCP VM behind SSH tunnels.
 
