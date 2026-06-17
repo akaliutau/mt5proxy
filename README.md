@@ -189,3 +189,21 @@ From host:
 docker compose logs -f mt5proxy
 docker exec -it mt5-proxy-scratch bash -lc 'ls -lh /logs && tail -100 /logs/bridge-init.log'
 ```
+
+## 9. Deployment
+
+From the other GCP VM in the same VPC, use the mt5proxy VM’s internal IP:
+
+```bash
+curl -fsS http://MT5_PROXY_INTERNAL_IP:8000/health
+```
+
+For readiness after MT5/Wine/bridge startup:
+
+```bash
+curl -fsS http://MT5_PROXY_INTERNAL_IP:8000/health/ready
+```
+
+curl -fsS -H "X-API-Key: longkey" \
+  http://10.128.0.4:8000/v1/status
+  
